@@ -1,0 +1,14 @@
+<resources>
+    <string name="app_name">Minseo9</string>
+    <string name="monitor_title">6900번 도착 알림</string>
+    <string name="monitor_route">동천동현대홈타운2차아파트(29116) → 잠실종합운동장 방향</string>
+    <string name="monitor_idle">모니터링을 시작하면 15/10/5/3/1분 전에 알림을 보냅니다.</string>
+    <string name="monitor_loading">도착 정보를 확인하고 있습니다.</string>
+    <string name="monitor_started">도착 정보 확인을 시작했습니다.</string>
+    <string name="monitor_stopped">모니터링을 종료했습니다.</string>
+    <string name="notification_permission_needed">알림 권한이 필요합니다.</string>
+    <string name="first_vehicle_alarm">이번 차량 알림</string>
+    <string name="second_vehicle_alarm">다음 차량 알림</string>
+    <string name="start_monitoring">모니터링 시작</string>
+    <string name="stop_monitoring">모니터링 종료</string>
+</resources>
