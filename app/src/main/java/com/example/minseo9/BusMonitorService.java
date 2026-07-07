@@ -41,6 +41,8 @@ public class BusMonitorService extends Service {
     private static final String PREFS_NAME = "bus_monitor";
     private static final String KEY_ACTIVE = "active";
     private static final String KEY_SELECTED_VEHICLE = "selected_vehicle";
+    private static final String KEY_PREVIOUS_ETA = "previous_eta";
+    private static final String KEY_NOTIFIED_MASK = "notified_mask";
     private static final int FOREGROUND_NOTIFICATION_ID = 1001;
     public static final int[] THRESHOLDS = {15, 10, 5, 3, 1};
 
@@ -68,6 +70,8 @@ public class BusMonitorService extends Service {
 
     public static void stop(Context context) {
         setMonitoringActive(context, false);
+        resetNotificationState(context);
+        BusArrivalNotifier.cancelAll(context);
         context.stopService(new Intent(context, BusMonitorService.class));
     }
 
@@ -88,6 +92,14 @@ public class BusMonitorService extends Service {
                 .apply();
     }
 
+    public static void resetNotificationState(Context context) {
+        context.getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .edit()
+                .remove(KEY_PREVIOUS_ETA)
+                .putInt(KEY_NOTIFIED_MASK, 0)
+                .apply();
+    }
+
     private static void setMonitoringActive(Context context, boolean active) {
         context.getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
                 .edit()
@@ -100,6 +112,8 @@ public class BusMonitorService extends Service {
         super.onCreate();
         createNotificationChannel();
         arrivalNotifier = new BusArrivalNotifier(this);
+        currentSelectedVehicle = getSelectedVehicle(this);
+        loadNotificationState();
         acquireWakeLock();
     }
 
@@ -134,7 +148,7 @@ public class BusMonitorService extends Service {
         }
 
         executorService = Executors.newSingleThreadScheduledExecutor();
-        executorService.scheduleWithFixedDelay(this::pollArrival, 0, 30, TimeUnit.SECONDS);
+        executorService.scheduleWithFixedDelay(this::pollArrival, 30, 30, TimeUnit.SECONDS);
     }
 
     private void pollOnce() {
@@ -155,6 +169,7 @@ public class BusMonitorService extends Service {
                 currentSelectedVehicle = selectedVehicle;
                 previousEtaMinutes = null;
                 notifiedThresholds.clear();
+                saveNotificationState();
             }
             int selectedEtaMinutes = arrival.predictTime(selectedVehicle);
             String status = formatStatus(arrival);
@@ -163,11 +178,11 @@ public class BusMonitorService extends Service {
             if (selectedEtaMinutes >= 0) {
                 notifyCrossedThresholds(arrival, selectedVehicle);
                 previousEtaMinutes = selectedEtaMinutes;
+                saveNotificationState();
             }
 
             if (selectedEtaMinutes >= 0 && (selectedEtaMinutes <= 0 || notifiedThresholds.contains(1))) {
-                setMonitoringActive(this, false);
-                stopSelf();
+                finishMonitoring("선택한 차량이 도착해 모니터링을 종료했습니다.");
             }
         } catch (IOException exception) {
             publishStatus("도착 정보 조회 실패: " + exception.getMessage());
@@ -232,7 +247,49 @@ public class BusMonitorService extends Service {
         }
 
         notifiedThresholds.add(selectedThreshold);
+        saveNotificationState();
         arrivalNotifier.notifyThreshold(selectedThreshold, formatNotificationBody(arrival, vehicleIndex));
+    }
+
+    private void loadNotificationState() {
+        int storedPreviousEta = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .getInt(KEY_PREVIOUS_ETA, -1);
+        previousEtaMinutes = storedPreviousEta >= 0 ? storedPreviousEta : null;
+
+        notifiedThresholds.clear();
+        int mask = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getInt(KEY_NOTIFIED_MASK, 0);
+        for (int threshold : THRESHOLDS) {
+            if ((mask & thresholdBit(threshold)) != 0) {
+                notifiedThresholds.add(threshold);
+            }
+        }
+    }
+
+    private void saveNotificationState() {
+        int mask = 0;
+        for (int threshold : notifiedThresholds) {
+            mask |= thresholdBit(threshold);
+        }
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .edit()
+                .putInt(KEY_PREVIOUS_ETA, previousEtaMinutes != null ? previousEtaMinutes : -1)
+                .putInt(KEY_NOTIFIED_MASK, mask)
+                .apply();
+    }
+
+    private int thresholdBit(int threshold) {
+        return 1 << threshold;
+    }
+
+    private void finishMonitoring(String status) {
+        setMonitoringActive(this, false);
+        publishStatus(status);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE);
+        } else {
+            stopForeground(true);
+        }
+        stopSelf();
     }
 
     private String formatNotificationBody(GbisArrivalClient.Arrival arrival, int vehicleIndex) {

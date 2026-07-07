@@ -71,14 +71,20 @@ public class MainActivity extends AppCompatActivity {
                     ? BusMonitorService.VEHICLE_SECOND
                     : BusMonitorService.VEHICLE_FIRST;
             BusMonitorService.setSelectedVehicle(this, vehicleIndex);
-            refreshArrivalPreview();
             if (BusMonitorService.isMonitoringActive(this)) {
+                BusMonitorService.resetNotificationState(this);
                 BusMonitorService.refreshNow(this);
+            } else {
+                refreshArrivalPreview();
             }
         });
         findViewById(R.id.startButton).setOnClickListener(view -> requestNotificationPermissionOrStart());
         findViewById(R.id.stopButton).setOnClickListener(view -> stopMonitoring());
-        refreshArrivalPreview();
+        if (BusMonitorService.isMonitoringActive(this)) {
+            BusMonitorService.refreshNow(this);
+        } else {
+            refreshArrivalPreview();
+        }
     }
 
     @Override
@@ -116,14 +122,13 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void startMonitoring() {
+        BusMonitorService.resetNotificationState(this);
         BusMonitorService.start(this);
-        refreshArrivalPreview();
     }
 
     private void stopMonitoring() {
         BusMonitorService.stop(this);
         statusText.setText(R.string.monitor_stopped);
-        refreshArrivalPreview();
     }
 
     private void refreshArrivalPreview() {

@@ -11,7 +11,7 @@ import androidx.core.app.NotificationCompat;
 
 public final class BusArrivalNotifier {
     public static final String CHANNEL_ID = "bus_arrival_watch_v2";
-    public static final int NOTIFICATION_ID = 2001;
+    private static final int NOTIFICATION_ID_BASE = 2000;
 
     private static final String CHANNEL_NAME = "버스 도착 알림";
 
@@ -69,7 +69,7 @@ public final class BusArrivalNotifier {
         if (nm == null) {
             return;
         }
-        nm.notify(NOTIFICATION_ID, builder.build());
+        nm.notify(notificationId(threshold), builder.build());
     }
 
     public static void cancelAll(Context context) {
@@ -77,6 +77,12 @@ public final class BusArrivalNotifier {
         if (nm == null) {
             return;
         }
-        nm.cancel(NOTIFICATION_ID);
+        for (int threshold : BusMonitorService.THRESHOLDS) {
+            nm.cancel(notificationId(threshold));
+        }
+    }
+
+    private static int notificationId(int threshold) {
+        return NOTIFICATION_ID_BASE + threshold;
     }
 }

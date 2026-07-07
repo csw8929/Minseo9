@@ -40,10 +40,22 @@ final class GbisArrivalClient {
             JSONObject header = response.getJSONObject("msgHeader");
             int resultCode = header.optInt("resultCode", -1);
             if (resultCode != 0) {
+                if (resultCode == 4) {
+                    return Arrival.empty();
+                }
                 throw new IOException(header.optString("resultMessage", "GBIS result " + resultCode));
             }
 
-            JSONObject item = response.getJSONObject("msgBody").getJSONObject("busArrivalItem");
+            JSONObject msgBody = response.optJSONObject("msgBody");
+            if (msgBody == null) {
+                return Arrival.empty();
+            }
+
+            JSONObject item = msgBody.optJSONObject("busArrivalItem");
+            if (item == null) {
+                return Arrival.empty();
+            }
+
             return new Arrival(
                     item.optInt("predictTime1", -1),
                     item.optString("predictTime2"),
@@ -95,6 +107,22 @@ final class GbisArrivalClient {
         final String plateNo2;
         final int remainSeatCount1;
         final String remainSeatCount2;
+
+        static Arrival empty() {
+            return new Arrival(
+                    -1,
+                    "",
+                    -1,
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    -1,
+                    ""
+            );
+        }
 
         Arrival(
                 int predictTime1,
