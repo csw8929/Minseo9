@@ -28,6 +28,56 @@
 **Priority:** P3
 **Depends on:** None
 
+## Reliability
+
+### ACTION_STATUS 브로드캐스트 위조 가능성 (API 24-32)
+
+**What:** `BusMonitorService`가 `ACTION_STATUS`를 `sendBroadcast` + `setPackage`로 발행하고, `MainActivity`는 `RECEIVER_NOT_EXPORTED`로 등록해서 수신한다. API 33+에서는 OS가 `RECEIVER_NOT_EXPORTED`를 강제하지만, API 24-32(현재 minSdk=24)에서는 context-registered receiver에 대해 이 플래그가 OS 레벨로 강제되지 않아 같은 기기에 설치된 다른 앱이 동일 액션 문자열로 위조된 브로드캐스트를 보내 ETA/좌석/정류장 값을 조작할 수 있다.
+
+**Why:** 이번 리디자인으로 브로드캐스트가 구동하는 화면 요소가 작은 상태 텍스트에서 큰 카운트다운 숫자(사용자가 버스를 놓치지 않기 위해 의존하는 핵심 신호)로 커져서 영향 범위가 커졌다.
+
+**Context:** Claude adversarial 리뷰(2026-07-08)에서 발견. 실제 테스트 단말(탭/폴드/플립/미니/xr)은 모두 API 33+로 추정되어 즉각적 위험은 낮지만, minSdk=24 선언과는 맞지 않는 신뢰 경계다.
+
+**Effort:** M (브로드캐스트 대신 바운드 서비스 콜백이나 인메모리 pub/sub로 교체 필요)
+**Priority:** P2
+**Depends on:** None
+
+### 도착 시 유령 포그라운드 알림 레이스
+
+**What:** `updateForegroundNotification()`은 `mainHandler.post()`로 비동기 처리되는데, 버스가 도착해 `finishMonitoring()`이 같은 `pollArrival()` 호출 안에서 동기적으로 `stopForeground()`/`stopSelf()`를 부르면, 나중에 실행되는 posted runnable이 이미 종료된 서비스에 대해 알림 ID 1001을 다시 `notify()`할 수 있다. 결과적으로 모니터링이 끝났는데도 "감시 중" 알림이 유령처럼 남을 수 있다.
+
+**Why:** 사용자가 실제로는 끝난 모니터링을 계속 진행 중이라고 오인할 수 있다.
+
+**Context:** Claude adversarial 리뷰(2026-07-08)에서 발견. 이 리디자인 PR과 무관한 기존 로직(`BusMonitorService.pollArrival`/`finishMonitoring`)의 레이스 컨디션.
+
+**Effort:** S-M (posted runnable 안에서 `isMonitoringActive`/인스턴스 종료 플래그 확인, 또는 `finishMonitoring`에서 대기 중인 handler 메시지 취소)
+**Priority:** P2
+**Depends on:** None
+
+### 모니터링 시작 시 API 이중 호출
+
+**What:** `validateAndStartMonitoring()`이 검증용으로 GBIS API를 한 번 호출하고 결과를 버린 뒤, `BusMonitorService.start()`가 `EXTRA_FORCE_REFRESH`로 즉시 자체 조회를 한 번 더 한다. 시작 버튼을 누를 때마다 API 호출이 2배가 된다.
+
+**Why:** data.go.kr 공개 API 키는 일일 호출 한도가 있어, 시작/종료를 반복하면 한도 소모가 누적된다.
+
+**Context:** 이번 세션에서 추가한 `validateAndStartMonitoring` 검증 플로우가 원인. Codex/Claude adversarial 리뷰(2026-07-08) 공통 지적.
+
+**Effort:** S (검증 시 이미 가져온 `Arrival` 값을 서비스 시작 시 재사용하도록 전달)
+**Priority:** P3
+**Depends on:** None
+
+### formatStatus의 선택 차량 재조회 TOCTOU
+
+**What:** `pollArrival()`이 `selectedVehicle`을 한 번 읽고, `formatStatus()`가 내부에서 `getSelectedVehicle(this)`를 다시 읽는다. 두 읽기 사이에 사용자가 라디오 버튼을 바꾸면 같은 poll 사이클에서 표시 텍스트의 "▶" 표시와 실제 임계값/종료 판단에 쓰인 차량이 서로 어긋날 수 있다.
+
+**Why:** 발생 확률은 낮지만 발생 시 사용자에게 잘못된 차량이 선택된 것처럼 보이는 조용한 불일치.
+
+**Context:** Claude adversarial 리뷰(2026-07-08)에서 발견. 이 PR과 무관한 기존 로직.
+
+**Effort:** S (이미 읽은 `selectedVehicle` 값을 `formatStatus`/`formatVehicleLine`에 인자로 전달)
+**Priority:** P3
+**Depends on:** None
+
 ## Completed
 
 ### GBIS API 연동 + Foreground Service 모니터링 구현
