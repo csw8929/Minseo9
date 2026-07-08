@@ -1,13 +1,17 @@
 package com.example.minseo9;
 
 import android.Manifest;
+import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.PowerManager;
+import android.provider.Settings;
 import android.widget.RadioGroup;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -15,6 +19,7 @@ import android.widget.Toast;
 import androidx.activity.EdgeToEdge;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 import androidx.core.graphics.Insets;
@@ -28,12 +33,13 @@ import java.util.concurrent.Executors;
 public class MainActivity extends AppCompatActivity {
     private TextView statusText;
     private RadioGroup vehicleRadioGroup;
+    private AlertDialog batteryOptimizationDialog;
     private final GbisArrivalClient arrivalClient = new GbisArrivalClient();
     private final ExecutorService executorService = Executors.newSingleThreadExecutor();
     private final ActivityResultLauncher<String> notificationPermissionLauncher =
             registerForActivityResult(new ActivityResultContracts.RequestPermission(), isGranted -> {
                 if (isGranted) {
-                    startMonitoring();
+                    checkBatteryOptimizationThenStart();
                 } else {
                     Toast.makeText(this, R.string.notification_permission_needed, Toast.LENGTH_SHORT).show();
                 }
@@ -91,16 +97,16 @@ public class MainActivity extends AppCompatActivity {
     protected void onStart() {
         super.onStart();
         IntentFilter filter = new IntentFilter(BusMonitorService.ACTION_STATUS);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(statusReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
-        } else {
-            registerReceiver(statusReceiver, filter);
-        }
+        ContextCompat.registerReceiver(this, statusReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
     }
 
     @Override
     protected void onStop() {
         unregisterReceiver(statusReceiver);
+        if (batteryOptimizationDialog != null) {
+            batteryOptimizationDialog.dismiss();
+            batteryOptimizationDialog = null;
+        }
         super.onStop();
     }
 
@@ -114,11 +120,41 @@ public class MainActivity extends AppCompatActivity {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
                 || ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
                 == PackageManager.PERMISSION_GRANTED) {
-            startMonitoring();
+            checkBatteryOptimizationThenStart();
             return;
         }
 
         notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS);
+    }
+
+    private void checkBatteryOptimizationThenStart() {
+        PowerManager powerManager = (PowerManager) getSystemService(POWER_SERVICE);
+        boolean ignoringOptimizations = powerManager != null
+                && powerManager.isIgnoringBatteryOptimizations(getPackageName());
+        if (ignoringOptimizations) {
+            startMonitoring();
+            return;
+        }
+
+        batteryOptimizationDialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.battery_optimization_title)
+                .setMessage(R.string.battery_optimization_message)
+                .setPositiveButton(R.string.battery_optimization_open_settings, (dialog, which) -> {
+                    requestIgnoreBatteryOptimizations();
+                    startMonitoring();
+                })
+                .setNegativeButton(R.string.battery_optimization_skip, (dialog, which) -> startMonitoring())
+                .show();
+    }
+
+    private void requestIgnoreBatteryOptimizations() {
+        Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+        intent.setData(Uri.parse("package:" + getPackageName()));
+        try {
+            startActivity(intent);
+        } catch (ActivityNotFoundException | SecurityException exception) {
+            Toast.makeText(this, R.string.battery_optimization_settings_unavailable, Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void startMonitoring() {
@@ -141,7 +177,8 @@ public class MainActivity extends AppCompatActivity {
                 String status = formatStatus(arrival);
                 runOnUiThread(() -> statusText.setText(status));
             } catch (IOException exception) {
-                runOnUiThread(() -> statusText.setText("도착 정보 조회 실패: " + exception.getMessage()));
+                runOnUiThread(() -> statusText.setText(
+                        getString(R.string.monitor_fetch_failed, exception.getMessage())));
             }
         });
     }
