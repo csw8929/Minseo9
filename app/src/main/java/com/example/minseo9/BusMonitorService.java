@@ -13,6 +13,7 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.util.Log;
 
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
@@ -27,8 +28,12 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 public class BusMonitorService extends Service {
+    private static final String TAG = "BusMonitorService";
     public static final String ACTION_STATUS = "com.example.minseo9.ACTION_STATUS";
     public static final String EXTRA_STATUS = "status";
+    public static final String EXTRA_ETA_MINUTES = "eta_minutes";
+    public static final String EXTRA_LOCATION_NO = "location_no";
+    public static final String EXTRA_SEAT_COUNT = "seat_count";
     public static final String EXTRA_FORCE_REFRESH = "force_refresh";
     public static final int VEHICLE_FIRST = 1;
     public static final int VEHICLE_SECOND = 2;
@@ -45,7 +50,8 @@ public class BusMonitorService extends Service {
     private static final String KEY_NOTIFIED_MASK = "notified_mask";
     private static final int FOREGROUND_NOTIFICATION_ID = 1001;
     private static final long WAKE_LOCK_TIMEOUT_MS = TimeUnit.MINUTES.toMillis(10);
-    public static final int[] THRESHOLDS = {15, 10, 5, 3, 1};
+    public static final int URGENT_THRESHOLD_MINUTES = 3;
+    public static final int[] THRESHOLDS = {15, 10, 5, URGENT_THRESHOLD_MINUTES, 1};
 
     private final GbisArrivalClient arrivalClient = new GbisArrivalClient();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -56,11 +62,17 @@ public class BusMonitorService extends Service {
     private int currentSelectedVehicle = VEHICLE_FIRST;
     private PowerManager.WakeLock wakeLock;
 
-    public static void start(Context context) {
+    public static boolean start(Context context) {
         setMonitoringActive(context, true);
         Intent intent = new Intent(context, BusMonitorService.class);
         intent.putExtra(EXTRA_FORCE_REFRESH, true);
-        ContextCompat.startForegroundService(context, intent);
+        try {
+            ContextCompat.startForegroundService(context, intent);
+            return true;
+        } catch (RuntimeException exception) {
+            setMonitoringActive(context, false);
+            return false;
+        }
     }
 
     public static void refreshNow(Context context) {
@@ -176,7 +188,8 @@ public class BusMonitorService extends Service {
             }
             int selectedEtaMinutes = arrival.predictTime(selectedVehicle);
             String status = formatStatus(arrival);
-            publishStatus(status);
+            publishStatus(status, selectedEtaMinutes,
+                    arrival.locationNo(selectedVehicle), arrival.remainSeatCount(selectedVehicle));
             updateForegroundNotification(status);
             if (selectedEtaMinutes >= 0) {
                 notifyCrossedThresholds(arrival, selectedVehicle);
@@ -188,8 +201,10 @@ public class BusMonitorService extends Service {
                 finishMonitoring("선택한 차량이 도착해 모니터링을 종료했습니다.");
             }
         } catch (IOException exception) {
+            Log.e(TAG, "도착 정보 조회 실패", exception);
             publishStatus("도착 정보 조회 실패: " + exception.getMessage());
         } catch (RuntimeException exception) {
+            Log.e(TAG, "도착 정보 처리 중 오류", exception);
             publishStatus("도착 정보 처리 중 오류가 발생했습니다: " + exception.getMessage());
         }
     }
@@ -233,27 +248,38 @@ public class BusMonitorService extends Service {
 
     private void notifyCrossedThresholds(GbisArrivalClient.Arrival arrival, int vehicleIndex) {
         int etaMinutes = arrival.predictTime(vehicleIndex);
-        Integer selectedThreshold = null;
+
+        if (previousEtaMinutes == null) {
+            Integer selectedThreshold = null;
+            for (int threshold : THRESHOLDS) {
+                if (!notifiedThresholds.contains(threshold) && etaMinutes <= threshold) {
+                    selectedThreshold = threshold;
+                }
+            }
+            if (selectedThreshold == null) {
+                return;
+            }
+            notifiedThresholds.add(selectedThreshold);
+            saveNotificationState();
+            arrivalNotifier.notifyThreshold(selectedThreshold, formatNotificationBody(arrival, vehicleIndex));
+            return;
+        }
+
+        boolean anyNotified = false;
         for (int threshold : THRESHOLDS) {
             if (notifiedThresholds.contains(threshold)) {
                 continue;
             }
-
-            boolean crossed = previousEtaMinutes == null
-                    ? etaMinutes <= threshold
-                    : previousEtaMinutes > threshold && etaMinutes <= threshold;
-            if (crossed) {
-                selectedThreshold = threshold;
+            if (previousEtaMinutes > threshold && etaMinutes <= threshold) {
+                notifiedThresholds.add(threshold);
+                arrivalNotifier.notifyThreshold(threshold, formatNotificationBody(arrival, vehicleIndex));
+                anyNotified = true;
             }
         }
 
-        if (selectedThreshold == null) {
-            return;
+        if (anyNotified) {
+            saveNotificationState();
         }
-
-        notifiedThresholds.add(selectedThreshold);
-        saveNotificationState();
-        arrivalNotifier.notifyThreshold(selectedThreshold, formatNotificationBody(arrival, vehicleIndex));
     }
 
     private void loadNotificationState() {
@@ -353,9 +379,16 @@ public class BusMonitorService extends Service {
     }
 
     private void publishStatus(String status) {
+        publishStatus(status, -1, -1, -1);
+    }
+
+    private void publishStatus(String status, int etaMinutes, int locationNo, int seatCount) {
         Intent intent = new Intent(ACTION_STATUS);
         intent.setPackage(getPackageName());
         intent.putExtra(EXTRA_STATUS, status);
+        intent.putExtra(EXTRA_ETA_MINUTES, etaMinutes);
+        intent.putExtra(EXTRA_LOCATION_NO, locationNo);
+        intent.putExtra(EXTRA_SEAT_COUNT, seatCount);
         sendBroadcast(intent);
     }
 
