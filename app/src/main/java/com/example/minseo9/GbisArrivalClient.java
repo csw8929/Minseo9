@@ -76,8 +76,12 @@ final class GbisArrivalClient {
         }
     }
 
-    private static String encode(String value) {
-        return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    static String encode(String value) {
+        try {
+            return URLEncoder.encode(value, "UTF-8");
+        } catch (java.io.UnsupportedEncodingException exception) {
+            throw new AssertionError("UTF-8 is always supported", exception);
+        }
     }
 
     private static String readBody(InputStream stream) throws IOException {

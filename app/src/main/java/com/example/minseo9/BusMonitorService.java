@@ -44,6 +44,7 @@ public class BusMonitorService extends Service {
     private static final String KEY_PREVIOUS_ETA = "previous_eta";
     private static final String KEY_NOTIFIED_MASK = "notified_mask";
     private static final int FOREGROUND_NOTIFICATION_ID = 1001;
+    private static final long WAKE_LOCK_TIMEOUT_MS = TimeUnit.MINUTES.toMillis(10);
     public static final int[] THRESHOLDS = {15, 10, 5, 3, 1};
 
     private final GbisArrivalClient arrivalClient = new GbisArrivalClient();
@@ -157,14 +158,16 @@ public class BusMonitorService extends Service {
     }
 
     private void pollArrival() {
+        renewWakeLock();
         try {
             GbisArrivalClient.Arrival arrival = arrivalClient.fetchArrival(STATION_ID, ROUTE_ID);
-            if (arrival.predictTime1 < 0) {
+            int selectedVehicle = getSelectedVehicle(this);
+            if (arrival.predictTime(selectedVehicle) < 0) {
                 publishStatus("도착 예정 정보가 없습니다.");
+                updateForegroundNotification("도착 예정 정보가 없습니다.");
                 return;
             }
 
-            int selectedVehicle = getSelectedVehicle(this);
             if (selectedVehicle != currentSelectedVehicle) {
                 currentSelectedVehicle = selectedVehicle;
                 previousEtaMinutes = null;
@@ -186,6 +189,8 @@ public class BusMonitorService extends Service {
             }
         } catch (IOException exception) {
             publishStatus("도착 정보 조회 실패: " + exception.getMessage());
+        } catch (RuntimeException exception) {
+            publishStatus("도착 정보 처리 중 오류가 발생했습니다: " + exception.getMessage());
         }
     }
 
@@ -284,11 +289,7 @@ public class BusMonitorService extends Service {
     private void finishMonitoring(String status) {
         setMonitoringActive(this, false);
         publishStatus(status);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            stopForeground(STOP_FOREGROUND_REMOVE);
-        } else {
-            stopForeground(true);
-        }
+        stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf();
     }
 
@@ -347,10 +348,7 @@ public class BusMonitorService extends Service {
 
     private PendingIntent createMainPendingIntent() {
         Intent intent = new Intent(this, MainActivity.class);
-        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            flags |= PendingIntent.FLAG_IMMUTABLE;
-        }
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE;
         return PendingIntent.getActivity(this, 0, intent, flags);
     }
 
@@ -379,7 +377,7 @@ public class BusMonitorService extends Service {
         return (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
     }
 
-    private void acquireWakeLock() {
+    private synchronized void acquireWakeLock() {
         PowerManager powerManager = (PowerManager) getSystemService(POWER_SERVICE);
         if (powerManager == null) {
             return;
@@ -388,10 +386,16 @@ public class BusMonitorService extends Service {
                 PowerManager.PARTIAL_WAKE_LOCK,
                 "Minseo9:BusMonitor");
         wakeLock.setReferenceCounted(false);
-        wakeLock.acquire();
+        wakeLock.acquire(WAKE_LOCK_TIMEOUT_MS);
     }
 
-    private void releaseWakeLock() {
+    private synchronized void renewWakeLock() {
+        if (wakeLock != null) {
+            wakeLock.acquire(WAKE_LOCK_TIMEOUT_MS);
+        }
+    }
+
+    private synchronized void releaseWakeLock() {
         if (wakeLock != null && wakeLock.isHeld()) {
             wakeLock.release();
         }
