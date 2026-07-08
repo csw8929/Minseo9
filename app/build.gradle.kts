@@ -10,6 +10,14 @@ val gbisServiceKey = rootProject.file(".gbis-key")
     ?.replace("\"", "\\\"")
     ?: ""
 
+val appVersion = rootProject.file("VERSION").readText().trim()
+val versionParts = appVersion.split(".")
+val computedVersionCode =
+    versionParts[0].toInt() * 1000 +
+    versionParts[1].toInt() * 100 +
+    versionParts[2].toInt() * 10 +
+    versionParts[3].toInt()
+
 android {
     namespace = "com.example.minseo9"
     compileSdk = 36
@@ -18,8 +26,8 @@ android {
         applicationId = "com.example.minseo9"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = computedVersionCode
+        versionName = appVersion
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "GBIS_SERVICE_KEY", "\"$gbisServiceKey\"")
