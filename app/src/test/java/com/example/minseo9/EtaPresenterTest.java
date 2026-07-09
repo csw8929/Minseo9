@@ -11,6 +11,7 @@ public class EtaPresenterTest {
     private static final String FULL = "%1$d개 정류장 전 · 잔여좌석 %2$d";
     private static final String LOCATION_ONLY = "%1$d개 정류장 전";
     private static final String SEATS_ONLY = "잔여좌석 %1$d";
+    private static final String STATION_LINE = "현재 %1$s";
 
     @Test
     public void isUrgent_trueAtThresholdAndBelow() {
@@ -57,5 +58,21 @@ public class EtaPresenterTest {
     public void buildCaption_neitherKnown_returnsEmpty() {
         String caption = EtaPresenter.buildCaption(-1, -1, FULL, LOCATION_ONLY, SEATS_ONLY);
         assertEquals("", caption);
+    }
+
+    @Test
+    public void buildStationLine_knownStationName_formatsLine() {
+        String line = EtaPresenter.buildStationLine("동천동현대홈타운2차아파트", STATION_LINE);
+        assertEquals("현재 동천동현대홈타운2차아파트", line);
+    }
+
+    @Test
+    public void buildStationLine_emptyStationName_returnsEmpty() {
+        assertEquals("", EtaPresenter.buildStationLine("", STATION_LINE));
+    }
+
+    @Test
+    public void buildStationLine_nullStationName_returnsEmpty() {
+        assertEquals("", EtaPresenter.buildStationLine(null, STATION_LINE));
     }
 }

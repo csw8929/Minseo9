@@ -182,6 +182,13 @@ final class GbisArrivalClient {
             return remainSeatCount1;
         }
 
+        String plateNo(int vehicleIndex) {
+            if (vehicleIndex == BusMonitorService.VEHICLE_SECOND) {
+                return plateNo2;
+            }
+            return plateNo1;
+        }
+
         private static int parseInt(String value, int fallback) {
             if (value == null || value.isEmpty()) {
                 return fallback;

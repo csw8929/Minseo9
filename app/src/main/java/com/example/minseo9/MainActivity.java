@@ -49,6 +49,7 @@ public class MainActivity extends AppCompatActivity {
     private TextView heroNumberText;
     private TextView heroUnitText;
     private TextView heroCaptionText;
+    private TextView stationNameText;
     private RadioGroup vehicleRadioGroup;
     private Button startButton;
     private Button stopButton;
@@ -73,7 +74,8 @@ public class MainActivity extends AppCompatActivity {
             int etaMinutes = intent.getIntExtra(BusMonitorService.EXTRA_ETA_MINUTES, -1);
             int locationNo = intent.getIntExtra(BusMonitorService.EXTRA_LOCATION_NO, -1);
             int seatCount = intent.getIntExtra(BusMonitorService.EXTRA_SEAT_COUNT, -1);
-            renderEta(etaMinutes, locationNo, seatCount, status);
+            String stationName = intent.getStringExtra(BusMonitorService.EXTRA_STATION_NAME);
+            renderEta(etaMinutes, locationNo, seatCount, stationName, status);
             updateMonitoringUi();
         }
     };
@@ -96,6 +98,7 @@ public class MainActivity extends AppCompatActivity {
         heroNumberText = findViewById(R.id.heroNumberText);
         heroUnitText = findViewById(R.id.heroUnitText);
         heroCaptionText = findViewById(R.id.heroCaptionText);
+        stationNameText = findViewById(R.id.stationNameText);
         vehicleRadioGroup = findViewById(R.id.vehicleRadioGroup);
         startButton = findViewById(R.id.startButton);
         stopButton = findViewById(R.id.stopButton);
@@ -110,7 +113,6 @@ public class MainActivity extends AppCompatActivity {
                     : BusMonitorService.VEHICLE_FIRST;
             BusMonitorService.setSelectedVehicle(this, vehicleIndex);
             if (BusMonitorService.isMonitoringActive(this)) {
-                BusMonitorService.resetNotificationState(this);
                 BusMonitorService.refreshNow(this);
             } else {
                 refreshArrivalPreview();
@@ -252,7 +254,8 @@ public class MainActivity extends AppCompatActivity {
                 int etaMinutes = selectedArrival.arrival.predictTime(selectedArrival.selectedVehicle);
                 int locationNo = selectedArrival.arrival.locationNo(selectedArrival.selectedVehicle);
                 int seatCount = selectedArrival.arrival.remainSeatCount(selectedArrival.selectedVehicle);
-                runOnUiThread(() -> renderEta(etaMinutes, locationNo, seatCount,
+                String stationName = selectedArrival.arrival.stationName(selectedArrival.selectedVehicle);
+                runOnUiThread(() -> renderEta(etaMinutes, locationNo, seatCount, stationName,
                         getString(R.string.monitor_idle)));
             } catch (IOException exception) {
                 Log.e(TAG, "도착 정보 미리보기 조회 실패", exception);
@@ -280,7 +283,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void renderEta(int etaMinutes, int locationNo, int seatCount, String fallbackMessage) {
+    private void renderEta(int etaMinutes, int locationNo, int seatCount, String stationName, String fallbackMessage) {
         if (etaMinutes < 0) {
             showIdle(fallbackMessage);
             return;
@@ -305,12 +308,21 @@ public class MainActivity extends AppCompatActivity {
             heroCaptionText.setVisibility(View.VISIBLE);
             heroCaptionText.setText(caption);
         }
+
+        String stationLine = buildStationLine(stationName);
+        if (stationLine.isEmpty()) {
+            stationNameText.setVisibility(View.GONE);
+        } else {
+            stationNameText.setVisibility(View.VISIBLE);
+            stationNameText.setText(stationLine);
+        }
     }
 
     private void showIdle(String message) {
         heroNumberText.animate().cancel();
         heroNumberRow.setVisibility(View.GONE);
         heroCaptionText.setVisibility(View.GONE);
+        stationNameText.setVisibility(View.GONE);
         idleText.setVisibility(View.VISIBLE);
         idleText.setText(message);
         lastDisplayedEta = null;
@@ -334,6 +346,10 @@ public class MainActivity extends AppCompatActivity {
                 getString(R.string.monitor_caption_full),
                 getString(R.string.monitor_caption_location_only),
                 getString(R.string.monitor_caption_seats_only));
+    }
+
+    private String buildStationLine(String stationName) {
+        return EtaPresenter.buildStationLine(stationName, getString(R.string.monitor_station_line));
     }
 
     private void updateMonitoringUi() {

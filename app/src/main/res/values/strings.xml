@@ -13,6 +13,7 @@
     <string name="monitor_caption_full">%1$d개 정류장 전 · 잔여좌석 %2$d</string>
     <string name="monitor_caption_location_only">%1$d개 정류장 전</string>
     <string name="monitor_caption_seats_only">잔여좌석 %1$d</string>
+    <string name="monitor_station_line">현재 %1$s</string>
     <string name="monitor_stopped">모니터링을 종료했습니다.</string>
     <string name="monitor_watching_label">감시 중</string>
     <string name="notification_permission_needed">알림 권한이 필요합니다.</string>
