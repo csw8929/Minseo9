@@ -78,6 +78,30 @@
 **Priority:** P3
 **Depends on:** None
 
+### resetNotificationState()가 이미 실행 중인 서비스의 인메모리 상태를 지우지 못함
+
+**What:** `resetNotificationState(Context)`는 static이라 SharedPreferences만 지우고, 이미 살아있는 `BusMonitorService` 인스턴스의 `notificationStates` 맵은 건드리지 못한다. 현재 모든 호출 지점(`stop()`, `startMonitoring()` 직전)이 서비스가 곧 재시작되는 시점에만 호출되어 우연히 안전하지만, 이 보장은 호출 지점의 관례에만 의존한다.
+
+**Why:** 향후 다른 경로(예: 서비스가 살아있는 동안 리셋을 호출하는 코드)가 추가되면 인메모리 상태와 SharedPreferences가 조용히 어긋날 수 있다.
+
+**Context:** Claude adversarial 리뷰(2026-07-09)에서 발견. 현재 코드에서는 실제로 발생하지 않는 잠재적 함정.
+
+**Effort:** S (인스턴스 메서드로 전환하거나, 살아있는 서비스에 대해 맵도 함께 초기화)
+**Priority:** P3
+**Depends on:** None
+
+### notifyThreshold()의 알림 ID가 차량을 구분하지 않음
+
+**What:** `BusArrivalNotifier.notificationId()`는 `2000 + threshold`만 사용해 어떤 차량(이번/다음)의 알림인지 구분하지 않는다. 현재는 선택된 차량 하나만 알림을 보내므로 실제로 충돌하지 않지만, 데이터 모델(차량별 독립 상태)과 알림 발행 로직(선택된 차량만 발행) 사이에 암묵적 결합이 있다.
+
+**Why:** 향후 두 차량을 동시에 알림받는 기능을 추가하면 이 ID 스킴이 충돌한다.
+
+**Context:** Codex 리뷰(2026-07-09)에서 발견. 현재 코드 경로에서는 재현되지 않음.
+
+**Effort:** S (알림 ID에 차량 슬롯 포함)
+**Priority:** P3
+**Depends on:** None
+
 ## Completed
 
 ### GBIS API 연동 + Foreground Service 모니터링 구현
