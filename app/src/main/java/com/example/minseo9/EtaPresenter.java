@@ -29,4 +29,11 @@ final class EtaPresenter {
         }
         return "";
     }
+
+    static String buildStationLine(String stationName, String format) {
+        if (stationName == null || stationName.isEmpty()) {
+            return "";
+        }
+        return String.format(Locale.KOREA, format, stationName);
+    }
 }
