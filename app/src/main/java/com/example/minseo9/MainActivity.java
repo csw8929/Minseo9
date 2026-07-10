@@ -12,6 +12,8 @@ import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.provider.Settings;
 import android.util.Log;
@@ -34,6 +36,7 @@ import androidx.core.view.WindowInsetsCompat;
 import java.io.IOException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 public class MainActivity extends AppCompatActivity {
     private static final String TAG = "MainActivity";
@@ -41,6 +44,7 @@ public class MainActivity extends AppCompatActivity {
     private static final int PULSE_CYCLE_MS = 800;
     private static final float PULSE_MIN_ALPHA = 0.3f;
     private static final float DISABLED_BUTTON_ALPHA = 0.5f;
+    private static final long PREVIEW_RETRY_DELAY_MS = TimeUnit.SECONDS.toMillis(15);
 
     private View pulseDot;
     private TextView monitoringLabel;
@@ -58,6 +62,9 @@ public class MainActivity extends AppCompatActivity {
     private Integer lastDisplayedEta;
     private final GbisArrivalClient arrivalClient = new GbisArrivalClient();
     private final ExecutorService executorService = Executors.newSingleThreadExecutor();
+    private final Handler retryHandler = new Handler(Looper.getMainLooper());
+    private boolean isStarted;
+    private boolean previewFetchInFlight;
     private final ActivityResultLauncher<String> notificationPermissionLauncher =
             registerForActivityResult(new ActivityResultContracts.RequestPermission(), isGranted -> {
                 if (isGranted) {
@@ -120,25 +127,28 @@ public class MainActivity extends AppCompatActivity {
         });
         startButton.setOnClickListener(view -> requestNotificationPermissionOrStart());
         stopButton.setOnClickListener(view -> stopMonitoring());
-        if (BusMonitorService.isMonitoringActive(this)) {
-            BusMonitorService.refreshNow(this);
-        } else {
-            refreshArrivalPreview();
-        }
         updateMonitoringUi();
     }
 
     @Override
     protected void onStart() {
         super.onStart();
+        isStarted = true;
         IntentFilter filter = new IntentFilter(BusMonitorService.ACTION_STATUS);
         ContextCompat.registerReceiver(this, statusReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
         updateMonitoringUi();
+        if (BusMonitorService.isMonitoringActive(this)) {
+            BusMonitorService.refreshNow(this);
+        } else {
+            refreshArrivalPreview();
+        }
     }
 
     @Override
     protected void onStop() {
+        isStarted = false;
         unregisterReceiver(statusReceiver);
+        retryHandler.removeCallbacksAndMessages(null);
         if (batteryOptimizationDialog != null) {
             batteryOptimizationDialog.dismiss();
             batteryOptimizationDialog = null;
@@ -247,6 +257,11 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void refreshArrivalPreview() {
+        if (previewFetchInFlight) {
+            return;
+        }
+        previewFetchInFlight = true;
+        retryHandler.removeCallbacksAndMessages(null);
         showIdle(getString(R.string.monitor_loading));
         executorService.execute(() -> {
             try {
@@ -255,12 +270,24 @@ public class MainActivity extends AppCompatActivity {
                 int locationNo = selectedArrival.arrival.locationNo(selectedArrival.selectedVehicle);
                 int seatCount = selectedArrival.arrival.remainSeatCount(selectedArrival.selectedVehicle);
                 String stationName = selectedArrival.arrival.stationName(selectedArrival.selectedVehicle);
-                runOnUiThread(() -> renderEta(etaMinutes, locationNo, seatCount, stationName,
-                        getString(R.string.monitor_idle)));
+                runOnUiThread(() -> {
+                    previewFetchInFlight = false;
+                    if (!isStarted || BusMonitorService.isMonitoringActive(this)) {
+                        return;
+                    }
+                    renderEta(etaMinutes, locationNo, seatCount, stationName,
+                            getString(R.string.monitor_idle));
+                });
             } catch (IOException exception) {
                 Log.e(TAG, "도착 정보 미리보기 조회 실패", exception);
-                runOnUiThread(() -> showIdle(
-                        getString(R.string.monitor_fetch_failed, exception.getMessage())));
+                runOnUiThread(() -> {
+                    previewFetchInFlight = false;
+                    if (!isStarted || BusMonitorService.isMonitoringActive(this)) {
+                        return;
+                    }
+                    showIdle(getString(R.string.monitor_fetch_failed, exception.getMessage()));
+                    retryHandler.postDelayed(this::refreshArrivalPreview, PREVIEW_RETRY_DELAY_MS);
+                });
             }
         });
     }
