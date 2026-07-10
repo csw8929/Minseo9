@@ -102,6 +102,18 @@
 **Priority:** P3
 **Depends on:** None
 
+### onStart()마다 모니터링 중이면 강제 refresh를 다시 요청
+
+**What:** `onStart()`가 모니터링 활성 상태일 때마다 `BusMonitorService.refreshNow(this)`를 호출한다. 알림 다이얼로그 열고 닫기, 화면 회전 등으로 `onStart()`가 짧은 시간에 여러 번 발생하면 그만큼 GBIS API 강제 조회가 반복된다.
+
+**Why:** data.go.kr 공개 API 키의 일일 호출 한도를 불필요하게 소모할 수 있다.
+
+**Context:** Claude adversarial 리뷰(2026-07-11)에서 발견. 서비스 쪽에서 중복 강제 조회를 합치는(coalesce) 로직이 없다는 전제하의 이론적 우려이며, 실사용 빈도상 영향은 낮음.
+
+**Effort:** S (마지막 refreshNow 호출 후 일정 시간 내 재호출은 무시하도록 디바운스)
+**Priority:** P3
+**Depends on:** None
+
 ## Completed
 
 ### GBIS API 연동 + Foreground Service 모니터링 구현
