@@ -14,6 +14,9 @@
     <string name="monitor_caption_location_only">%1$d개 정류장 전</string>
     <string name="monitor_caption_seats_only">잔여좌석 %1$d</string>
     <string name="monitor_station_line">현재 %1$s</string>
+    <string name="monitor_last_updated_loading">갱신 중…</string>
+    <string name="monitor_last_updated_just_now">마지막 갱신: 방금 전</string>
+    <string name="monitor_last_updated_minutes_ago">마지막 갱신: %1$d분 전</string>
     <string name="monitor_stopped">모니터링을 종료했습니다.</string>
     <string name="monitor_watching_label">감시 중</string>
     <string name="notification_permission_needed">알림 권한이 필요합니다.</string>
