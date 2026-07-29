@@ -64,8 +64,8 @@ final class GbisArrivalClient {
                     item.optString("stationNm1"),
                     item.optString("stationNm2"),
                     item.optString("routeDestName"),
-                    item.optString("plateNo1"),
-                    item.optString("plateNo2"),
+                    normalizePlate(item.optString("plateNo1")),
+                    normalizePlate(item.optString("plateNo2")),
                     item.optInt("remainSeatCnt1", -1),
                     item.optString("remainSeatCnt2")
             );
@@ -74,6 +74,15 @@ final class GbisArrivalClient {
         } catch (Exception exception) {
             throw new IOException("GBIS response parse failed", exception);
         }
+    }
+
+    /**
+     * org.json's optString() stringifies an explicit JSON null (as opposed to a missing key)
+     * to the literal 4-character string "null" rather than "". Normalize that away so an
+     * unassigned vehicle slot's plate never gets treated as a real, matchable plate number.
+     */
+    private static String normalizePlate(String value) {
+        return "null".equals(value) ? "" : value;
     }
 
     static String encode(String value) {

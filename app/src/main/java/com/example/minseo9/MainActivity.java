@@ -45,6 +45,7 @@ public class MainActivity extends AppCompatActivity {
     private static final float PULSE_MIN_ALPHA = 0.3f;
     private static final float DISABLED_BUTTON_ALPHA = 0.5f;
     private static final long PREVIEW_RETRY_DELAY_MS = TimeUnit.SECONDS.toMillis(15);
+    private static final long LAST_UPDATED_TICK_MS = TimeUnit.SECONDS.toMillis(30);
 
     private View pulseDot;
     private TextView monitoringLabel;
@@ -54,6 +55,7 @@ public class MainActivity extends AppCompatActivity {
     private TextView heroUnitText;
     private TextView heroCaptionText;
     private TextView stationNameText;
+    private TextView lastUpdatedText;
     private RadioGroup vehicleRadioGroup;
     private Button startButton;
     private Button stopButton;
@@ -63,8 +65,17 @@ public class MainActivity extends AppCompatActivity {
     private final GbisArrivalClient arrivalClient = new GbisArrivalClient();
     private final ExecutorService executorService = Executors.newSingleThreadExecutor();
     private final Handler retryHandler = new Handler(Looper.getMainLooper());
+    private final Handler lastUpdatedTickHandler = new Handler(Looper.getMainLooper());
+    private final Runnable lastUpdatedTick = new Runnable() {
+        @Override
+        public void run() {
+            updateLastUpdatedText();
+            lastUpdatedTickHandler.postDelayed(this, LAST_UPDATED_TICK_MS);
+        }
+    };
     private boolean isStarted;
     private boolean previewFetchInFlight;
+    private Long lastFetchSuccessAtMillis;
     private final ActivityResultLauncher<String> notificationPermissionLauncher =
             registerForActivityResult(new ActivityResultContracts.RequestPermission(), isGranted -> {
                 if (isGranted) {
@@ -82,6 +93,11 @@ public class MainActivity extends AppCompatActivity {
             int locationNo = intent.getIntExtra(BusMonitorService.EXTRA_LOCATION_NO, -1);
             int seatCount = intent.getIntExtra(BusMonitorService.EXTRA_SEAT_COUNT, -1);
             String stationName = intent.getStringExtra(BusMonitorService.EXTRA_STATION_NAME);
+            long updatedAt = intent.getLongExtra(BusMonitorService.EXTRA_UPDATED_AT, -1L);
+            if (updatedAt > 0) {
+                lastFetchSuccessAtMillis = updatedAt;
+                updateLastUpdatedText();
+            }
             renderEta(etaMinutes, locationNo, seatCount, stationName, status);
             updateMonitoringUi();
         }
@@ -106,6 +122,7 @@ public class MainActivity extends AppCompatActivity {
         heroUnitText = findViewById(R.id.heroUnitText);
         heroCaptionText = findViewById(R.id.heroCaptionText);
         stationNameText = findViewById(R.id.stationNameText);
+        lastUpdatedText = findViewById(R.id.lastUpdatedText);
         vehicleRadioGroup = findViewById(R.id.vehicleRadioGroup);
         startButton = findViewById(R.id.startButton);
         stopButton = findViewById(R.id.stopButton);
@@ -120,6 +137,7 @@ public class MainActivity extends AppCompatActivity {
                     : BusMonitorService.VEHICLE_FIRST;
             BusMonitorService.setSelectedVehicle(this, vehicleIndex);
             if (BusMonitorService.isMonitoringActive(this)) {
+                BusMonitorService.switchTarget(this);
                 BusMonitorService.refreshNow(this);
             } else {
                 refreshArrivalPreview();
@@ -137,6 +155,8 @@ public class MainActivity extends AppCompatActivity {
         IntentFilter filter = new IntentFilter(BusMonitorService.ACTION_STATUS);
         ContextCompat.registerReceiver(this, statusReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
         updateMonitoringUi();
+        updateLastUpdatedText();
+        lastUpdatedTickHandler.postDelayed(lastUpdatedTick, LAST_UPDATED_TICK_MS);
         if (BusMonitorService.isMonitoringActive(this)) {
             BusMonitorService.refreshNow(this);
         } else {
@@ -149,6 +169,7 @@ public class MainActivity extends AppCompatActivity {
         isStarted = false;
         unregisterReceiver(statusReceiver);
         retryHandler.removeCallbacksAndMessages(null);
+        lastUpdatedTickHandler.removeCallbacksAndMessages(null);
         if (batteryOptimizationDialog != null) {
             batteryOptimizationDialog.dismiss();
             batteryOptimizationDialog = null;
@@ -275,6 +296,8 @@ public class MainActivity extends AppCompatActivity {
                     if (!isStarted || BusMonitorService.isMonitoringActive(this)) {
                         return;
                     }
+                    lastFetchSuccessAtMillis = System.currentTimeMillis();
+                    updateLastUpdatedText();
                     renderEta(etaMinutes, locationNo, seatCount, stationName,
                             getString(R.string.monitor_idle));
                 });
@@ -377,6 +400,18 @@ public class MainActivity extends AppCompatActivity {
 
     private String buildStationLine(String stationName) {
         return EtaPresenter.buildStationLine(stationName, getString(R.string.monitor_station_line));
+    }
+
+    private void updateLastUpdatedText() {
+        if (lastFetchSuccessAtMillis == null) {
+            lastUpdatedText.setText(R.string.monitor_last_updated_loading);
+            return;
+        }
+        long elapsedMinutes = TimeUnit.MILLISECONDS.toMinutes(
+                System.currentTimeMillis() - lastFetchSuccessAtMillis);
+        lastUpdatedText.setText(elapsedMinutes < 1
+                ? getString(R.string.monitor_last_updated_just_now)
+                : getString(R.string.monitor_last_updated_minutes_ago, elapsedMinutes));
     }
 
     private void updateMonitoringUi() {

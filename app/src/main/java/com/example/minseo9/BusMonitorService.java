@@ -7,6 +7,7 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.Handler;
@@ -20,10 +21,8 @@ import androidx.core.app.NotificationCompat;
 import androidx.core.content.ContextCompat;
 
 import java.io.IOException;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -37,6 +36,7 @@ public class BusMonitorService extends Service {
     public static final String EXTRA_LOCATION_NO = "location_no";
     public static final String EXTRA_SEAT_COUNT = "seat_count";
     public static final String EXTRA_STATION_NAME = "station_name";
+    public static final String EXTRA_UPDATED_AT = "updated_at";
     public static final String EXTRA_FORCE_REFRESH = "force_refresh";
     public static final int VEHICLE_FIRST = 1;
     public static final int VEHICLE_SECOND = 2;
@@ -49,24 +49,52 @@ public class BusMonitorService extends Service {
     private static final String PREFS_NAME = "bus_monitor";
     private static final String KEY_ACTIVE = "active";
     private static final String KEY_SELECTED_VEHICLE = "selected_vehicle";
-    private static final String KEY_PREVIOUS_ETA = "previous_eta";
-    private static final String KEY_NOTIFIED_MASK = "notified_mask";
+    private static final String KEY_TARGET_PLATE_NO = "target_plate_no";
+    private static final String KEY_TARGET_PREVIOUS_ETA = "target_previous_eta";
+    private static final String KEY_TARGET_NOTIFIED_MASK = "target_notified_mask";
+    private static final String KEY_TARGET_MISSING_POLLS = "target_missing_polls";
+    private static final String KEY_TARGET_LAST_ETA = "target_last_eta";
+    private static final String KEY_TARGET_LAST_LOCATION_NO = "target_last_location_no";
+    private static final String KEY_TARGET_GENERATION = "target_generation";
+    private static final String KEY_PARKED_PLATE_NO = "parked_plate_no";
+    private static final String KEY_PARKED_PREVIOUS_ETA = "parked_previous_eta";
+    private static final String KEY_PARKED_NOTIFIED_MASK = "parked_notified_mask";
     private static final int FOREGROUND_NOTIFICATION_ID = 1001;
     private static final long WAKE_LOCK_TIMEOUT_MS = TimeUnit.MINUTES.toMillis(10);
+    private static final int TARGET_MISSING_POLL_LIMIT = 3;
     public static final int URGENT_THRESHOLD_MINUTES = 3;
     public static final int[] THRESHOLDS = {15, 10, 5, URGENT_THRESHOLD_MINUTES, 1};
 
     private final GbisArrivalClient arrivalClient = new GbisArrivalClient();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final Map<Integer, VehicleNotificationState> notificationStates = new HashMap<>();
     private BusArrivalNotifier arrivalNotifier;
     private ScheduledExecutorService executorService;
     private PowerManager.WakeLock wakeLock;
 
-    private static final class VehicleNotificationState {
+    private static final class TargetState {
+        String plateNo;
         Integer previousEtaMinutes;
-        String lastPlateNo;
+        int missingPolls;
+        int lastEtaMinutes = -1;
+        int lastLocationNo = -1;
+        int generation;
         final Set<Integer> notifiedThresholds = new HashSet<>();
+    }
+
+    private static final class EffectiveVehicle {
+        final int vehicleIndex;
+        final int etaMinutes;
+        final int locationNo;
+        final int seatCount;
+        final String stationName;
+
+        EffectiveVehicle(int vehicleIndex, int etaMinutes, int locationNo, int seatCount, String stationName) {
+            this.vehicleIndex = vehicleIndex;
+            this.etaMinutes = etaMinutes;
+            this.locationNo = locationNo;
+            this.seatCount = seatCount;
+            this.stationName = stationName;
+        }
     }
 
     public static boolean start(Context context) {
@@ -85,7 +113,11 @@ public class BusMonitorService extends Service {
     public static void refreshNow(Context context) {
         Intent intent = new Intent(context, BusMonitorService.class);
         intent.putExtra(EXTRA_FORCE_REFRESH, true);
-        ContextCompat.startForegroundService(context, intent);
+        try {
+            ContextCompat.startForegroundService(context, intent);
+        } catch (RuntimeException exception) {
+            Log.e(TAG, "강제 새로고침 시작 실패", exception);
+        }
     }
 
     public static void stop(Context context) {
@@ -113,21 +145,47 @@ public class BusMonitorService extends Service {
     }
 
     public static void resetNotificationState(Context context) {
-        context.getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                .edit()
-                .remove(previousEtaKey(VEHICLE_FIRST))
-                .remove(notifiedMaskKey(VEHICLE_FIRST))
-                .remove(previousEtaKey(VEHICLE_SECOND))
-                .remove(notifiedMaskKey(VEHICLE_SECOND))
+        SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        int nextGeneration = prefs.getInt(KEY_TARGET_GENERATION, 0) + 1;
+        prefs.edit()
+                .remove(KEY_TARGET_PLATE_NO)
+                .remove(KEY_TARGET_PREVIOUS_ETA)
+                .remove(KEY_TARGET_NOTIFIED_MASK)
+                .remove(KEY_TARGET_MISSING_POLLS)
+                .remove(KEY_TARGET_LAST_ETA)
+                .remove(KEY_TARGET_LAST_LOCATION_NO)
+                .remove(KEY_PARKED_PLATE_NO)
+                .remove(KEY_PARKED_PREVIOUS_ETA)
+                .remove(KEY_PARKED_NOTIFIED_MASK)
+                .putInt(KEY_TARGET_GENERATION, nextGeneration)
                 .apply();
     }
 
-    private static String previousEtaKey(int vehicleIndex) {
-        return KEY_PREVIOUS_ETA + "_" + vehicleIndex;
-    }
-
-    private static String notifiedMaskKey(int vehicleIndex) {
-        return KEY_NOTIFIED_MASK + "_" + vehicleIndex;
+    /**
+     * Switches the actively-tracked target when the user manually changes vehicle selection
+     * mid-monitoring. Unlike {@link #resetNotificationState}, this parks the outgoing target's
+     * notification history so switching back to the same physical bus restores it instead of
+     * re-firing already-sent threshold alerts.
+     */
+    public static void switchTarget(Context context) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        String currentPlate = prefs.getString(KEY_TARGET_PLATE_NO, null);
+        SharedPreferences.Editor editor = prefs.edit();
+        if (currentPlate != null && !currentPlate.isEmpty()) {
+            editor.putString(KEY_PARKED_PLATE_NO, currentPlate)
+                    .putInt(KEY_PARKED_PREVIOUS_ETA, prefs.getInt(KEY_TARGET_PREVIOUS_ETA, -1))
+                    .putInt(KEY_PARKED_NOTIFIED_MASK, prefs.getInt(KEY_TARGET_NOTIFIED_MASK, 0));
+        }
+        int nextGeneration = prefs.getInt(KEY_TARGET_GENERATION, 0) + 1;
+        editor.remove(KEY_TARGET_PLATE_NO)
+                .remove(KEY_TARGET_PREVIOUS_ETA)
+                .remove(KEY_TARGET_NOTIFIED_MASK)
+                .remove(KEY_TARGET_MISSING_POLLS)
+                .remove(KEY_TARGET_LAST_ETA)
+                .remove(KEY_TARGET_LAST_LOCATION_NO)
+                .putInt(KEY_TARGET_GENERATION, nextGeneration)
+                .apply();
+        BusArrivalNotifier.cancelThresholdNotifications(context);
     }
 
     private static void setMonitoringActive(Context context, boolean active) {
@@ -142,7 +200,6 @@ public class BusMonitorService extends Service {
         super.onCreate();
         createNotificationChannel();
         arrivalNotifier = new BusArrivalNotifier(this);
-        loadNotificationState();
         acquireWakeLock();
     }
 
@@ -190,34 +247,51 @@ public class BusMonitorService extends Service {
         try {
             GbisArrivalClient.Arrival arrival = arrivalClient.fetchArrival(STATION_ID, ROUTE_ID);
             int selectedVehicle = getSelectedVehicle(this);
-            VehicleNotificationState state = stateFor(selectedVehicle);
+            TargetState state = loadTargetState();
 
-            if (arrival.predictTime(selectedVehicle) < 0) {
-                if (state.previousEtaMinutes != null && state.previousEtaMinutes <= 1) {
-                    finishMonitoring("선택한 차량이 도착해 모니터링을 종료했습니다.");
+            EffectiveVehicle effective = resolveEffectiveVehicle(arrival, selectedVehicle, state);
+
+            if (effective == null) {
+                state.missingPolls++;
+                if (state.missingPolls < TARGET_MISSING_POLL_LIMIT) {
+                    saveTargetState(state);
+                    publishSuccessStatus("도착 예정 정보가 없습니다.", -1, -1, -1, "");
+                    updateForegroundNotification("도착 예정 정보가 없습니다.");
                     return;
                 }
-                publishStatus("도착 예정 정보가 없습니다.");
-                updateForegroundNotification("도착 예정 정보가 없습니다.");
+
+                boolean wasImminent = (state.lastEtaMinutes >= 0 && state.lastEtaMinutes <= 1)
+                        || (state.lastLocationNo >= 0 && state.lastLocationNo <= 1);
+                if (wasImminent) {
+                    BusArrivalNotifier.cancelThresholdNotifications(this);
+                    arrivalNotifier.notifyArrival("정류장을 통과한 것으로 추정됩니다.");
+                    finishMonitoring("선택한 차량이 도착해 모니터링을 종료했습니다.");
+                } else {
+                    finishMonitoring("추적 중인 차량 정보를 더 이상 찾을 수 없어 모니터링을 종료했습니다.");
+                }
                 return;
             }
 
-            resetStateOnVehicleTurnover(arrival, selectedVehicle, state);
-
-            int selectedEtaMinutes = arrival.predictTime(selectedVehicle);
-            String status = formatStatus(arrival);
-            publishStatus(status, selectedEtaMinutes,
-                    arrival.locationNo(selectedVehicle), arrival.remainSeatCount(selectedVehicle),
-                    arrival.stationName(selectedVehicle));
+            state.missingPolls = 0;
+            int etaMinutes = effective.etaMinutes;
+            String status = formatStatus(arrival, effective.vehicleIndex);
+            publishSuccessStatus(status, etaMinutes, effective.locationNo, effective.seatCount, effective.stationName);
             updateForegroundNotification(status);
 
-            notifyCrossedThresholds(arrival, selectedVehicle, state);
-            state.previousEtaMinutes = selectedEtaMinutes;
-            saveNotificationState(selectedVehicle, state);
+            state.lastEtaMinutes = etaMinutes;
+            state.lastLocationNo = effective.locationNo;
 
-            if (selectedEtaMinutes == 0) {
+            if (etaMinutes == 0) {
+                BusArrivalNotifier.cancelThresholdNotifications(this);
+                arrivalNotifier.notifyArrival(formatNotificationBody(arrival, effective.vehicleIndex));
+                saveTargetState(state);
                 finishMonitoring("선택한 차량이 도착해 모니터링을 종료했습니다.");
+                return;
             }
+
+            notifyCrossedThresholds(arrival, effective.vehicleIndex, state);
+            state.previousEtaMinutes = etaMinutes;
+            saveTargetState(state);
         } catch (IOException exception) {
             Log.e(TAG, "도착 정보 조회 실패", exception);
             publishStatus("도착 정보 조회 실패: " + exception.getMessage());
@@ -227,26 +301,94 @@ public class BusMonitorService extends Service {
         }
     }
 
-    private String formatStatus(GbisArrivalClient.Arrival arrival) {
+    private EffectiveVehicle resolveEffectiveVehicle(
+            GbisArrivalClient.Arrival arrival,
+            int selectedVehicle,
+            TargetState state
+    ) {
+        if (state.plateNo == null || state.plateNo.isEmpty()) {
+            int etaMinutes = arrival.predictTime(selectedVehicle);
+            if (etaMinutes < 0) {
+                return null;
+            }
+            String plateNo = arrival.plateNo(selectedVehicle);
+            if (plateNo != null && !plateNo.isEmpty()) {
+                state.plateNo = plateNo;
+                restoreParkedStateIfMatching(state);
+            }
+            return toEffectiveVehicle(arrival, selectedVehicle);
+        }
+
+        String plate1 = arrival.plateNo(VEHICLE_FIRST);
+        String plate2 = arrival.plateNo(VEHICLE_SECOND);
+
+        if (state.plateNo.equals(plate1) && arrival.predictTime(VEHICLE_FIRST) >= 0) {
+            return toEffectiveVehicle(arrival, VEHICLE_FIRST);
+        }
+        if (state.plateNo.equals(plate2) && arrival.predictTime(VEHICLE_SECOND) >= 0) {
+            return toEffectiveVehicle(arrival, VEHICLE_SECOND);
+        }
+
+        boolean bothPlatesMissingThisPoll = (plate1 == null || plate1.isEmpty())
+                && (plate2 == null || plate2.isEmpty());
+        if (bothPlatesMissingThisPoll && arrival.predictTime(selectedVehicle) >= 0) {
+            // Plate metadata blip (e.g. GBIS omitted plate numbers this poll) — fall back to the
+            // raw selected slot for this single poll rather than counting it as "target missing".
+            return toEffectiveVehicle(arrival, selectedVehicle);
+        }
+        return null;
+    }
+
+    private void restoreParkedStateIfMatching(TargetState state) {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        String parkedPlate = prefs.getString(KEY_PARKED_PLATE_NO, null);
+        if (parkedPlate == null || !parkedPlate.equals(state.plateNo)) {
+            return;
+        }
+        int parkedEta = prefs.getInt(KEY_PARKED_PREVIOUS_ETA, -1);
+        state.previousEtaMinutes = parkedEta >= 0 ? parkedEta : null;
+        int parkedMask = prefs.getInt(KEY_PARKED_NOTIFIED_MASK, 0);
+        state.notifiedThresholds.clear();
+        for (int threshold : THRESHOLDS) {
+            if ((parkedMask & thresholdBit(threshold)) != 0) {
+                state.notifiedThresholds.add(threshold);
+            }
+        }
+        prefs.edit()
+                .remove(KEY_PARKED_PLATE_NO)
+                .remove(KEY_PARKED_PREVIOUS_ETA)
+                .remove(KEY_PARKED_NOTIFIED_MASK)
+                .apply();
+    }
+
+    private EffectiveVehicle toEffectiveVehicle(GbisArrivalClient.Arrival arrival, int vehicleIndex) {
+        return new EffectiveVehicle(
+                vehicleIndex,
+                arrival.predictTime(vehicleIndex),
+                arrival.locationNo(vehicleIndex),
+                arrival.remainSeatCount(vehicleIndex),
+                arrival.stationName(vehicleIndex));
+    }
+
+    private String formatStatus(GbisArrivalClient.Arrival arrival, int effectiveVehicle) {
         StringBuilder builder = new StringBuilder();
-        int selectedVehicle = getSelectedVehicle(this);
         builder.append("알림 대상: ")
-                .append(vehicleLabel(selectedVehicle))
+                .append(vehicleLabel(effectiveVehicle))
                 .append("\n")
-                .append(formatVehicleLine(arrival, VEHICLE_FIRST, selectedVehicle))
+                .append(formatVehicleLine(arrival, VEHICLE_FIRST, effectiveVehicle))
                 .append("\n\n")
-                .append(formatVehicleLine(arrival, VEHICLE_SECOND, selectedVehicle));
+                .append(formatVehicleLine(arrival, VEHICLE_SECOND, effectiveVehicle));
         return builder.toString();
     }
 
-    private String formatVehicleLine(GbisArrivalClient.Arrival arrival, int vehicleIndex, int selectedVehicle) {
+    private String formatVehicleLine(GbisArrivalClient.Arrival arrival, int vehicleIndex, int effectiveVehicle) {
         int etaMinutes = arrival.predictTime(vehicleIndex);
         if (etaMinutes < 0) {
-            return linePrefix(vehicleIndex, selectedVehicle) + vehicleLabel(vehicleIndex) + ": 정보 없음";
+            return linePrefix(vehicleIndex, effectiveVehicle) + vehicleLabel(vehicleIndex) + ": 정보 없음";
         }
 
         StringBuilder builder = new StringBuilder();
-        builder.append(linePrefix(vehicleIndex, selectedVehicle))
+        builder.append(linePrefix(vehicleIndex, effectiveVehicle))
                 .append(vehicleLabel(vehicleIndex))
                 .append(": ")
                 .append(etaMinutes)
@@ -267,7 +409,7 @@ public class BusMonitorService extends Service {
     private void notifyCrossedThresholds(
             GbisArrivalClient.Arrival arrival,
             int vehicleIndex,
-            VehicleNotificationState state
+            TargetState state
     ) {
         int etaMinutes = arrival.predictTime(vehicleIndex);
 
@@ -282,12 +424,10 @@ public class BusMonitorService extends Service {
                 return;
             }
             state.notifiedThresholds.add(selectedThreshold);
-            saveNotificationState(vehicleIndex, state);
             arrivalNotifier.notifyThreshold(selectedThreshold, formatNotificationBody(arrival, vehicleIndex));
             return;
         }
 
-        boolean anyNotified = false;
         for (int threshold : THRESHOLDS) {
             if (state.notifiedThresholds.contains(threshold)) {
                 continue;
@@ -295,66 +435,53 @@ public class BusMonitorService extends Service {
             if (state.previousEtaMinutes > threshold && etaMinutes <= threshold) {
                 state.notifiedThresholds.add(threshold);
                 arrivalNotifier.notifyThreshold(threshold, formatNotificationBody(arrival, vehicleIndex));
-                anyNotified = true;
             }
         }
-
-        if (anyNotified) {
-            saveNotificationState(vehicleIndex, state);
-        }
     }
 
-    private VehicleNotificationState stateFor(int vehicleIndex) {
-        return notificationStates.computeIfAbsent(vehicleIndex, key -> new VehicleNotificationState());
-    }
+    private TargetState loadTargetState() {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        TargetState state = new TargetState();
+        state.generation = prefs.getInt(KEY_TARGET_GENERATION, 0);
+        state.plateNo = prefs.getString(KEY_TARGET_PLATE_NO, null);
 
-    private void resetStateOnVehicleTurnover(
-            GbisArrivalClient.Arrival arrival,
-            int vehicleIndex,
-            VehicleNotificationState state
-    ) {
-        String currentPlateNo = arrival.plateNo(vehicleIndex);
-        if (currentPlateNo == null || currentPlateNo.isEmpty()) {
-            return;
-        }
-        if (state.lastPlateNo != null && !state.lastPlateNo.isEmpty()
-                && !currentPlateNo.equals(state.lastPlateNo)) {
-            state.previousEtaMinutes = null;
-            state.notifiedThresholds.clear();
-        }
-        state.lastPlateNo = currentPlateNo;
-    }
-
-    private void loadNotificationState() {
-        notificationStates.clear();
-        loadNotificationState(VEHICLE_FIRST);
-        loadNotificationState(VEHICLE_SECOND);
-    }
-
-    private void loadNotificationState(int vehicleIndex) {
-        VehicleNotificationState state = stateFor(vehicleIndex);
-        int storedPreviousEta = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                .getInt(previousEtaKey(vehicleIndex), -1);
+        int storedPreviousEta = prefs.getInt(KEY_TARGET_PREVIOUS_ETA, -1);
         state.previousEtaMinutes = storedPreviousEta >= 0 ? storedPreviousEta : null;
 
-        state.notifiedThresholds.clear();
-        int mask = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getInt(notifiedMaskKey(vehicleIndex), 0);
+        state.missingPolls = prefs.getInt(KEY_TARGET_MISSING_POLLS, 0);
+        state.lastEtaMinutes = prefs.getInt(KEY_TARGET_LAST_ETA, -1);
+        state.lastLocationNo = prefs.getInt(KEY_TARGET_LAST_LOCATION_NO, -1);
+
+        int mask = prefs.getInt(KEY_TARGET_NOTIFIED_MASK, 0);
         for (int threshold : THRESHOLDS) {
             if ((mask & thresholdBit(threshold)) != 0) {
                 state.notifiedThresholds.add(threshold);
             }
         }
+        return state;
     }
 
-    private void saveNotificationState(int vehicleIndex, VehicleNotificationState state) {
+    /**
+     * Persists target state, but only if no reset/switch happened since {@link #loadTargetState()}
+     * was called for this poll. Prevents an in-flight poll (blocked on network I/O while the user
+     * switches vehicles) from overwriting the fresh state a switch just wrote with stale data.
+     */
+    private void saveTargetState(TargetState state) {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        if (prefs.getInt(KEY_TARGET_GENERATION, 0) != state.generation) {
+            return;
+        }
         int mask = 0;
         for (int threshold : state.notifiedThresholds) {
             mask |= thresholdBit(threshold);
         }
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                .edit()
-                .putInt(previousEtaKey(vehicleIndex), state.previousEtaMinutes != null ? state.previousEtaMinutes : -1)
-                .putInt(notifiedMaskKey(vehicleIndex), mask)
+        prefs.edit()
+                .putString(KEY_TARGET_PLATE_NO, state.plateNo)
+                .putInt(KEY_TARGET_PREVIOUS_ETA, state.previousEtaMinutes != null ? state.previousEtaMinutes : -1)
+                .putInt(KEY_TARGET_NOTIFIED_MASK, mask)
+                .putInt(KEY_TARGET_MISSING_POLLS, state.missingPolls)
+                .putInt(KEY_TARGET_LAST_ETA, state.lastEtaMinutes)
+                .putInt(KEY_TARGET_LAST_LOCATION_NO, state.lastLocationNo)
                 .apply();
     }
 
@@ -364,6 +491,8 @@ public class BusMonitorService extends Service {
 
     private void finishMonitoring(String status) {
         setMonitoringActive(this, false);
+        BusArrivalNotifier.cancelThresholdNotifications(this);
+        resetNotificationState(this);
         publishStatus(status);
         stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf();
@@ -429,10 +558,21 @@ public class BusMonitorService extends Service {
     }
 
     private void publishStatus(String status) {
-        publishStatus(status, -1, -1, -1, "");
+        publishStatus(status, -1, -1, -1, "", false);
     }
 
-    private void publishStatus(String status, int etaMinutes, int locationNo, int seatCount, String stationName) {
+    private void publishSuccessStatus(String status, int etaMinutes, int locationNo, int seatCount, String stationName) {
+        publishStatus(status, etaMinutes, locationNo, seatCount, stationName, true);
+    }
+
+    private void publishStatus(
+            String status,
+            int etaMinutes,
+            int locationNo,
+            int seatCount,
+            String stationName,
+            boolean success
+    ) {
         Intent intent = new Intent(ACTION_STATUS);
         intent.setPackage(getPackageName());
         intent.putExtra(EXTRA_STATUS, status);
@@ -440,6 +580,9 @@ public class BusMonitorService extends Service {
         intent.putExtra(EXTRA_LOCATION_NO, locationNo);
         intent.putExtra(EXTRA_SEAT_COUNT, seatCount);
         intent.putExtra(EXTRA_STATION_NAME, stationName);
+        if (success) {
+            intent.putExtra(EXTRA_UPDATED_AT, System.currentTimeMillis());
+        }
         sendBroadcast(intent);
     }
 

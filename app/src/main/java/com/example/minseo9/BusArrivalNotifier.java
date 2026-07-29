@@ -12,6 +12,7 @@ import androidx.core.app.NotificationCompat;
 public final class BusArrivalNotifier {
     public static final String CHANNEL_ID = "bus_arrival_watch_v2";
     private static final int NOTIFICATION_ID_BASE = 2000;
+    private static final int ARRIVAL_NOTIFICATION_ID = NOTIFICATION_ID_BASE + 99;
 
     private static final String CHANNEL_NAME = "버스 도착 알림";
 
@@ -72,13 +73,49 @@ public final class BusArrivalNotifier {
         nm.notify(notificationId(threshold), builder.build());
     }
 
-    public static void cancelAll(Context context) {
+    public void notifyArrival(String body) {
+        String title = "6900번 버스가 도착했습니다";
+
+        Intent openApp = new Intent(context, MainActivity.class);
+        openApp.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        PendingIntent contentPi = PendingIntent.getActivity(
+                context, 0, openApp,
+                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(context, CHANNEL_ID)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle(title)
+                .setContentText(body)
+                .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
+                .setContentIntent(contentPi)
+                .setAutoCancel(true)
+                .setCategory(NotificationCompat.CATEGORY_ALARM)
+                .setDefaults(NotificationCompat.DEFAULT_ALL)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC);
+
+        NotificationManager nm = context.getSystemService(NotificationManager.class);
+        if (nm == null) {
+            return;
+        }
+        nm.notify(ARRIVAL_NOTIFICATION_ID, builder.build());
+    }
+
+    public static void cancelThresholdNotifications(Context context) {
         NotificationManager nm = context.getSystemService(NotificationManager.class);
         if (nm == null) {
             return;
         }
         for (int threshold : BusMonitorService.THRESHOLDS) {
             nm.cancel(notificationId(threshold));
+        }
+    }
+
+    public static void cancelAll(Context context) {
+        cancelThresholdNotifications(context);
+        NotificationManager nm = context.getSystemService(NotificationManager.class);
+        if (nm != null) {
+            nm.cancel(ARRIVAL_NOTIFICATION_ID);
         }
     }
 
