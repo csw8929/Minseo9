@@ -66,30 +66,6 @@
 **Priority:** P3
 **Depends on:** None
 
-### formatStatus의 선택 차량 재조회 TOCTOU
-
-**What:** `pollArrival()`이 `selectedVehicle`을 한 번 읽고, `formatStatus()`가 내부에서 `getSelectedVehicle(this)`를 다시 읽는다. 두 읽기 사이에 사용자가 라디오 버튼을 바꾸면 같은 poll 사이클에서 표시 텍스트의 "▶" 표시와 실제 임계값/종료 판단에 쓰인 차량이 서로 어긋날 수 있다.
-
-**Why:** 발생 확률은 낮지만 발생 시 사용자에게 잘못된 차량이 선택된 것처럼 보이는 조용한 불일치.
-
-**Context:** Claude adversarial 리뷰(2026-07-08)에서 발견. 이 PR과 무관한 기존 로직.
-
-**Effort:** S (이미 읽은 `selectedVehicle` 값을 `formatStatus`/`formatVehicleLine`에 인자로 전달)
-**Priority:** P3
-**Depends on:** None
-
-### resetNotificationState()가 이미 실행 중인 서비스의 인메모리 상태를 지우지 못함
-
-**What:** `resetNotificationState(Context)`는 static이라 SharedPreferences만 지우고, 이미 살아있는 `BusMonitorService` 인스턴스의 `notificationStates` 맵은 건드리지 못한다. 현재 모든 호출 지점(`stop()`, `startMonitoring()` 직전)이 서비스가 곧 재시작되는 시점에만 호출되어 우연히 안전하지만, 이 보장은 호출 지점의 관례에만 의존한다.
-
-**Why:** 향후 다른 경로(예: 서비스가 살아있는 동안 리셋을 호출하는 코드)가 추가되면 인메모리 상태와 SharedPreferences가 조용히 어긋날 수 있다.
-
-**Context:** Claude adversarial 리뷰(2026-07-09)에서 발견. 현재 코드에서는 실제로 발생하지 않는 잠재적 함정.
-
-**Effort:** S (인스턴스 메서드로 전환하거나, 살아있는 서비스에 대해 맵도 함께 초기화)
-**Priority:** P3
-**Depends on:** None
-
 ### notifyThreshold()의 알림 ID가 차량을 구분하지 않음
 
 **What:** `BusArrivalNotifier.notificationId()`는 `2000 + threshold`만 사용해 어떤 차량(이번/다음)의 알림인지 구분하지 않는다. 현재는 선택된 차량 하나만 알림을 보내므로 실제로 충돌하지 않지만, 데이터 모델(차량별 독립 상태)과 알림 발행 로직(선택된 차량만 발행) 사이에 암묵적 결합이 있다.
@@ -114,7 +90,25 @@
 **Priority:** P3
 **Depends on:** None
 
+### plateNo 중복/플레이스홀더 값 실데이터 검증 필요
+
+**What:** `resolveEffectiveVehicle()`은 target의 차량 번호(plateNo)가 슬롯1/슬롯2 중 어디에 있는지 문자열 동일 비교로 찾는다. org.json이 명시적 null을 문자열 "null"로 반환하는 문제는 방어했지만, GBIS가 두 슬롯에 동일한 실제 차량 번호나 다른 종류의 placeholder 문자열("-" 등)을 내려주는 경우까지는 방어하지 않는다.
+
+**Why:** 실제 GBIS 응답 스키마를 직접 관찰하지 않고는 이런 케이스가 실제로 발생하는지 확인할 수 없다. 발생 시 잘못된 슬롯에 알림이 고정될 수 있다.
+
+**Context:** Claude adversarial 리뷰(2026-07-11)에서 발견. 실사용 중 정류소명/차량 데이터 이상이 관찰되면 재검토.
+
+**Effort:** S (알려진 placeholder 목록 확장, 또는 실데이터 관찰 후 대응)
+**Priority:** P3
+**Depends on:** None
+
 ## Completed
+
+### formatStatus의 선택 차량 재조회 TOCTOU
+**Completed:** v1.2.0.0 (2026-07-11) — `formatStatus`/`formatVehicleLine`이 이제 `effectiveVehicle`을 인자로 받아 내부에서 `getSelectedVehicle()`을 재조회하지 않음
+
+### resetNotificationState()가 이미 실행 중인 서비스의 인메모리 상태를 지우지 못함
+**Completed:** v1.2.0.0 (2026-07-11) — 차량 번호 기반 target 추적으로 재설계하며 인메모리 `notificationStates` 맵을 완전히 제거, 매 poll마다 SharedPreferences에서 새로 로드하도록 변경되어 문제 자체가 사라짐
 
 ### GBIS API 연동 + Foreground Service 모니터링 구현
 **Completed:** v1.0.0.0 (2026-07-07)
