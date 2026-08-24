@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.2.1.0] - 2026-08-02
+
+### Fixed
+- "이번 차량"/"다음 차량" 탭 전환 시 이미 보낸 임계값 알림이 다시 발송되던 문제 재수정. 기존 2슬롯 히스토리 캐시가 실사용 패턴(다음 차량 슬롯이 시간이 지나며 다른 물리 버스로 자연 교체됨)에서 유효한 이력을 지울 수 있었던 것을 evict 정책 개선으로 수정
+- 차량 전환 로직을 poll과 동일한 단일 스레드 executor에서만 순차 실행되도록 재설계해, 전환과 백그라운드 poll의 "알림 발송 → 상태 저장" 시퀀스가 겹치던 race 제거
+
+### Changed
+- BusMonitorService의 핵심 판단 로직(history 캐시 slot 정책, 차량 타깃 매칭, 임계값 교차 판단)을 Context에 의존하지 않는 순수 클래스(`HistoryCacheLogic`, `VehicleTargetResolver`, `ThresholdCrossingLogic`)로 분리하고 세밀한 unit test 추가
+
 ## [1.2.0.0] - 2026-07-11
 
 ### Added

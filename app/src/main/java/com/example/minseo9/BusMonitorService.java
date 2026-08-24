@@ -56,9 +56,13 @@ public class BusMonitorService extends Service {
     private static final String KEY_TARGET_LAST_ETA = "target_last_eta";
     private static final String KEY_TARGET_LAST_LOCATION_NO = "target_last_location_no";
     private static final String KEY_TARGET_GENERATION = "target_generation";
-    private static final String KEY_PARKED_PLATE_NO = "parked_plate_no";
-    private static final String KEY_PARKED_PREVIOUS_ETA = "parked_previous_eta";
-    private static final String KEY_PARKED_NOTIFIED_MASK = "parked_notified_mask";
+    private static final String KEY_HISTORY_PLATE_0 = "history_plate_0";
+    private static final String KEY_HISTORY_ETA_0 = "history_eta_0";
+    private static final String KEY_HISTORY_MASK_0 = "history_mask_0";
+    private static final String KEY_HISTORY_PLATE_1 = "history_plate_1";
+    private static final String KEY_HISTORY_ETA_1 = "history_eta_1";
+    private static final String KEY_HISTORY_MASK_1 = "history_mask_1";
+    private static final String KEY_SWITCH_PENDING = "switch_pending";
     private static final int FOREGROUND_NOTIFICATION_ID = 1001;
     private static final long WAKE_LOCK_TIMEOUT_MS = TimeUnit.MINUTES.toMillis(10);
     private static final int TARGET_MISSING_POLL_LIMIT = 3;
@@ -154,38 +158,44 @@ public class BusMonitorService extends Service {
                 .remove(KEY_TARGET_MISSING_POLLS)
                 .remove(KEY_TARGET_LAST_ETA)
                 .remove(KEY_TARGET_LAST_LOCATION_NO)
-                .remove(KEY_PARKED_PLATE_NO)
-                .remove(KEY_PARKED_PREVIOUS_ETA)
-                .remove(KEY_PARKED_NOTIFIED_MASK)
+                .remove(KEY_HISTORY_PLATE_0)
+                .remove(KEY_HISTORY_ETA_0)
+                .remove(KEY_HISTORY_MASK_0)
+                .remove(KEY_HISTORY_PLATE_1)
+                .remove(KEY_HISTORY_ETA_1)
+                .remove(KEY_HISTORY_MASK_1)
+                .remove(KEY_SWITCH_PENDING)
                 .putInt(KEY_TARGET_GENERATION, nextGeneration)
                 .apply();
     }
 
-    /**
-     * Switches the actively-tracked target when the user manually changes vehicle selection
-     * mid-monitoring. Unlike {@link #resetNotificationState}, this parks the outgoing target's
-     * notification history so switching back to the same physical bus restores it instead of
-     * re-firing already-sent threshold alerts.
-     */
     public static void switchTarget(Context context) {
-        SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        String currentPlate = prefs.getString(KEY_TARGET_PLATE_NO, null);
-        SharedPreferences.Editor editor = prefs.edit();
-        if (currentPlate != null && !currentPlate.isEmpty()) {
-            editor.putString(KEY_PARKED_PLATE_NO, currentPlate)
-                    .putInt(KEY_PARKED_PREVIOUS_ETA, prefs.getInt(KEY_TARGET_PREVIOUS_ETA, -1))
-                    .putInt(KEY_PARKED_NOTIFIED_MASK, prefs.getInt(KEY_TARGET_NOTIFIED_MASK, 0));
-        }
-        int nextGeneration = prefs.getInt(KEY_TARGET_GENERATION, 0) + 1;
-        editor.remove(KEY_TARGET_PLATE_NO)
-                .remove(KEY_TARGET_PREVIOUS_ETA)
-                .remove(KEY_TARGET_NOTIFIED_MASK)
-                .remove(KEY_TARGET_MISSING_POLLS)
-                .remove(KEY_TARGET_LAST_ETA)
-                .remove(KEY_TARGET_LAST_LOCATION_NO)
-                .putInt(KEY_TARGET_GENERATION, nextGeneration)
+        context.getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_SWITCH_PENDING, true)
                 .apply();
         BusArrivalNotifier.cancelThresholdNotifications(context);
+        refreshNow(context);
+    }
+
+    private static void pushHistory(
+            SharedPreferences prefs, String plateNo, int previousEta, int mask,
+            String livePlate1, String livePlate2
+    ) {
+        String slot0Plate = prefs.getString(KEY_HISTORY_PLATE_0, null);
+        String slot1Plate = prefs.getString(KEY_HISTORY_PLATE_1, null);
+        int slot = HistoryCacheLogic.chooseSlotToPush(plateNo, slot0Plate, slot1Plate, livePlate1, livePlate2);
+        if (slot == HistoryCacheLogic.DROP) {
+            return;
+        }
+        String plateKey = slot == HistoryCacheLogic.SLOT_0 ? KEY_HISTORY_PLATE_0 : KEY_HISTORY_PLATE_1;
+        String etaKey = slot == HistoryCacheLogic.SLOT_0 ? KEY_HISTORY_ETA_0 : KEY_HISTORY_ETA_1;
+        String maskKey = slot == HistoryCacheLogic.SLOT_0 ? KEY_HISTORY_MASK_0 : KEY_HISTORY_MASK_1;
+        prefs.edit()
+                .putString(plateKey, plateNo)
+                .putInt(etaKey, previousEta)
+                .putInt(maskKey, mask)
+                .apply();
     }
 
     private static void setMonitoringActive(Context context, boolean active) {
@@ -246,6 +256,11 @@ public class BusMonitorService extends Service {
         renewWakeLock();
         try {
             GbisArrivalClient.Arrival arrival = arrivalClient.fetchArrival(STATION_ID, ROUTE_ID);
+
+            if (consumeSwitchPending()) {
+                applyTargetSwitch(arrival);
+            }
+
             int selectedVehicle = getSelectedVehicle(this);
             TargetState state = loadTargetState();
 
@@ -301,63 +316,85 @@ public class BusMonitorService extends Service {
         }
     }
 
+    private boolean consumeSwitchPending() {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        boolean pending = prefs.getBoolean(KEY_SWITCH_PENDING, false);
+        if (pending) {
+            prefs.edit().remove(KEY_SWITCH_PENDING).apply();
+        }
+        return pending;
+    }
+
+    private void applyTargetSwitch(GbisArrivalClient.Arrival arrival) {
+        BusArrivalNotifier.cancelThresholdNotifications(this);
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        String currentPlate = prefs.getString(KEY_TARGET_PLATE_NO, null);
+        if (currentPlate != null && !currentPlate.isEmpty()) {
+            pushHistory(prefs, currentPlate,
+                    prefs.getInt(KEY_TARGET_PREVIOUS_ETA, -1),
+                    prefs.getInt(KEY_TARGET_NOTIFIED_MASK, 0),
+                    arrival.plateNo(VEHICLE_FIRST), arrival.plateNo(VEHICLE_SECOND));
+        }
+        prefs.edit()
+                .remove(KEY_TARGET_PLATE_NO)
+                .remove(KEY_TARGET_PREVIOUS_ETA)
+                .remove(KEY_TARGET_NOTIFIED_MASK)
+                .remove(KEY_TARGET_MISSING_POLLS)
+                .remove(KEY_TARGET_LAST_ETA)
+                .remove(KEY_TARGET_LAST_LOCATION_NO)
+                .apply();
+    }
+
     private EffectiveVehicle resolveEffectiveVehicle(
             GbisArrivalClient.Arrival arrival,
             int selectedVehicle,
             TargetState state
     ) {
-        if (state.plateNo == null || state.plateNo.isEmpty()) {
-            int etaMinutes = arrival.predictTime(selectedVehicle);
-            if (etaMinutes < 0) {
-                return null;
-            }
-            String plateNo = arrival.plateNo(selectedVehicle);
+        boolean bootstrap = VehicleTargetResolver.isBootstrap(state.plateNo);
+        int resolvedVehicle = VehicleTargetResolver.resolve(
+                state.plateNo, selectedVehicle,
+                arrival.plateNo(VEHICLE_FIRST), arrival.plateNo(VEHICLE_SECOND),
+                arrival.predictTime(VEHICLE_FIRST), arrival.predictTime(VEHICLE_SECOND));
+        if (resolvedVehicle == VehicleTargetResolver.NONE) {
+            return null;
+        }
+        if (bootstrap) {
+            String plateNo = arrival.plateNo(resolvedVehicle);
             if (plateNo != null && !plateNo.isEmpty()) {
                 state.plateNo = plateNo;
-                restoreParkedStateIfMatching(state);
+                restoreFromHistoryIfMatching(state);
             }
-            return toEffectiveVehicle(arrival, selectedVehicle);
         }
-
-        String plate1 = arrival.plateNo(VEHICLE_FIRST);
-        String plate2 = arrival.plateNo(VEHICLE_SECOND);
-
-        if (state.plateNo.equals(plate1) && arrival.predictTime(VEHICLE_FIRST) >= 0) {
-            return toEffectiveVehicle(arrival, VEHICLE_FIRST);
-        }
-        if (state.plateNo.equals(plate2) && arrival.predictTime(VEHICLE_SECOND) >= 0) {
-            return toEffectiveVehicle(arrival, VEHICLE_SECOND);
-        }
-
-        boolean bothPlatesMissingThisPoll = (plate1 == null || plate1.isEmpty())
-                && (plate2 == null || plate2.isEmpty());
-        if (bothPlatesMissingThisPoll && arrival.predictTime(selectedVehicle) >= 0) {
-            // Plate metadata blip (e.g. GBIS omitted plate numbers this poll) — fall back to the
-            // raw selected slot for this single poll rather than counting it as "target missing".
-            return toEffectiveVehicle(arrival, selectedVehicle);
-        }
-        return null;
+        return toEffectiveVehicle(arrival, resolvedVehicle);
     }
 
-    private void restoreParkedStateIfMatching(TargetState state) {
+    private void restoreFromHistoryIfMatching(TargetState state) {
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        String parkedPlate = prefs.getString(KEY_PARKED_PLATE_NO, null);
-        if (parkedPlate == null || !parkedPlate.equals(state.plateNo)) {
+        int slot = HistoryCacheLogic.findSlot(
+                state.plateNo,
+                prefs.getString(KEY_HISTORY_PLATE_0, null),
+                prefs.getString(KEY_HISTORY_PLATE_1, null));
+        if (slot == HistoryCacheLogic.NOT_FOUND) {
             return;
         }
-        int parkedEta = prefs.getInt(KEY_PARKED_PREVIOUS_ETA, -1);
-        state.previousEtaMinutes = parkedEta >= 0 ? parkedEta : null;
-        int parkedMask = prefs.getInt(KEY_PARKED_NOTIFIED_MASK, 0);
+        String etaKey = slot == HistoryCacheLogic.SLOT_0 ? KEY_HISTORY_ETA_0 : KEY_HISTORY_ETA_1;
+        String maskKey = slot == HistoryCacheLogic.SLOT_0 ? KEY_HISTORY_MASK_0 : KEY_HISTORY_MASK_1;
+        String plateKey = slot == HistoryCacheLogic.SLOT_0 ? KEY_HISTORY_PLATE_0 : KEY_HISTORY_PLATE_1;
+
+        int historyEta = prefs.getInt(etaKey, -1);
+        state.previousEtaMinutes = historyEta >= 0 ? historyEta : null;
+        int historyMask = prefs.getInt(maskKey, 0);
         state.notifiedThresholds.clear();
         for (int threshold : THRESHOLDS) {
-            if ((parkedMask & thresholdBit(threshold)) != 0) {
+            if ((historyMask & thresholdBit(threshold)) != 0) {
                 state.notifiedThresholds.add(threshold);
             }
         }
+        // Consumed — clear this slot so it doesn't keep matching once it's the active target again.
         prefs.edit()
-                .remove(KEY_PARKED_PLATE_NO)
-                .remove(KEY_PARKED_PREVIOUS_ETA)
-                .remove(KEY_PARKED_NOTIFIED_MASK)
+                .remove(plateKey)
+                .remove(etaKey)
+                .remove(maskKey)
                 .apply();
     }
 
@@ -412,30 +449,10 @@ public class BusMonitorService extends Service {
             TargetState state
     ) {
         int etaMinutes = arrival.predictTime(vehicleIndex);
-
-        if (state.previousEtaMinutes == null) {
-            Integer selectedThreshold = null;
-            for (int threshold : THRESHOLDS) {
-                if (!state.notifiedThresholds.contains(threshold) && etaMinutes <= threshold) {
-                    selectedThreshold = threshold;
-                }
-            }
-            if (selectedThreshold == null) {
-                return;
-            }
-            state.notifiedThresholds.add(selectedThreshold);
-            arrivalNotifier.notifyThreshold(selectedThreshold, formatNotificationBody(arrival, vehicleIndex));
-            return;
-        }
-
-        for (int threshold : THRESHOLDS) {
-            if (state.notifiedThresholds.contains(threshold)) {
-                continue;
-            }
-            if (state.previousEtaMinutes > threshold && etaMinutes <= threshold) {
-                state.notifiedThresholds.add(threshold);
-                arrivalNotifier.notifyThreshold(threshold, formatNotificationBody(arrival, vehicleIndex));
-            }
+        for (int threshold : ThresholdCrossingLogic.newlyCrossedThresholds(
+                state.previousEtaMinutes, etaMinutes, state.notifiedThresholds, THRESHOLDS)) {
+            state.notifiedThresholds.add(threshold);
+            arrivalNotifier.notifyThreshold(threshold, formatNotificationBody(arrival, vehicleIndex));
         }
     }
 
