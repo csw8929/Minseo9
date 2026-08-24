@@ -138,7 +138,6 @@ public class MainActivity extends AppCompatActivity {
             BusMonitorService.setSelectedVehicle(this, vehicleIndex);
             if (BusMonitorService.isMonitoringActive(this)) {
                 BusMonitorService.switchTarget(this);
-                BusMonitorService.refreshNow(this);
             } else {
                 refreshArrivalPreview();
             }
