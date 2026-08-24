@@ -53,8 +53,6 @@ public class BusMonitorService extends Service {
     private static final String KEY_TARGET_PREVIOUS_ETA = "target_previous_eta";
     private static final String KEY_TARGET_NOTIFIED_MASK = "target_notified_mask";
     private static final String KEY_TARGET_MISSING_POLLS = "target_missing_polls";
-    private static final String KEY_TARGET_LAST_ETA = "target_last_eta";
-    private static final String KEY_TARGET_LAST_LOCATION_NO = "target_last_location_no";
     private static final String KEY_TARGET_GENERATION = "target_generation";
     private static final String KEY_HISTORY_PLATE_0 = "history_plate_0";
     private static final String KEY_HISTORY_ETA_0 = "history_eta_0";
@@ -65,6 +63,7 @@ public class BusMonitorService extends Service {
     private static final String KEY_SWITCH_PENDING = "switch_pending";
     private static final int FOREGROUND_NOTIFICATION_ID = 1001;
     private static final long WAKE_LOCK_TIMEOUT_MS = TimeUnit.MINUTES.toMillis(10);
+    private static final long POLL_INTERVAL_SECONDS = 20;
     private static final int TARGET_MISSING_POLL_LIMIT = 3;
     public static final int URGENT_THRESHOLD_MINUTES = 3;
     public static final int[] THRESHOLDS = {15, 10, 5, URGENT_THRESHOLD_MINUTES, 1};
@@ -79,8 +78,6 @@ public class BusMonitorService extends Service {
         String plateNo;
         Integer previousEtaMinutes;
         int missingPolls;
-        int lastEtaMinutes = -1;
-        int lastLocationNo = -1;
         int generation;
         final Set<Integer> notifiedThresholds = new HashSet<>();
     }
@@ -156,8 +153,6 @@ public class BusMonitorService extends Service {
                 .remove(KEY_TARGET_PREVIOUS_ETA)
                 .remove(KEY_TARGET_NOTIFIED_MASK)
                 .remove(KEY_TARGET_MISSING_POLLS)
-                .remove(KEY_TARGET_LAST_ETA)
-                .remove(KEY_TARGET_LAST_LOCATION_NO)
                 .remove(KEY_HISTORY_PLATE_0)
                 .remove(KEY_HISTORY_ETA_0)
                 .remove(KEY_HISTORY_MASK_0)
@@ -244,7 +239,8 @@ public class BusMonitorService extends Service {
         }
 
         executorService = Executors.newSingleThreadScheduledExecutor();
-        executorService.scheduleWithFixedDelay(this::pollArrival, 30, 30, TimeUnit.SECONDS);
+        executorService.scheduleWithFixedDelay(
+                this::pollArrival, POLL_INTERVAL_SECONDS, POLL_INTERVAL_SECONDS, TimeUnit.SECONDS);
     }
 
     private void pollOnce() {
@@ -275,15 +271,8 @@ public class BusMonitorService extends Service {
                     return;
                 }
 
-                boolean wasImminent = (state.lastEtaMinutes >= 0 && state.lastEtaMinutes <= 1)
-                        || (state.lastLocationNo >= 0 && state.lastLocationNo <= 1);
-                if (wasImminent) {
-                    BusArrivalNotifier.cancelThresholdNotifications(this);
-                    arrivalNotifier.notifyArrival("정류장을 통과한 것으로 추정됩니다.");
-                    finishMonitoring("선택한 차량이 도착해 모니터링을 종료했습니다.");
-                } else {
-                    finishMonitoring("추적 중인 차량 정보를 더 이상 찾을 수 없어 모니터링을 종료했습니다.");
-                }
+                BusArrivalNotifier.cancelThresholdNotifications(this);
+                finishMonitoring("추적 중인 차량 정보를 더 이상 찾을 수 없어 모니터링을 종료했습니다.");
                 return;
             }
 
@@ -292,9 +281,6 @@ public class BusMonitorService extends Service {
             String status = formatStatus(arrival, effective.vehicleIndex);
             publishSuccessStatus(status, etaMinutes, effective.locationNo, effective.seatCount, effective.stationName);
             updateForegroundNotification(status);
-
-            state.lastEtaMinutes = etaMinutes;
-            state.lastLocationNo = effective.locationNo;
 
             if (etaMinutes == 0) {
                 BusArrivalNotifier.cancelThresholdNotifications(this);
@@ -340,8 +326,6 @@ public class BusMonitorService extends Service {
                 .remove(KEY_TARGET_PREVIOUS_ETA)
                 .remove(KEY_TARGET_NOTIFIED_MASK)
                 .remove(KEY_TARGET_MISSING_POLLS)
-                .remove(KEY_TARGET_LAST_ETA)
-                .remove(KEY_TARGET_LAST_LOCATION_NO)
                 .apply();
     }
 
@@ -466,8 +450,6 @@ public class BusMonitorService extends Service {
         state.previousEtaMinutes = storedPreviousEta >= 0 ? storedPreviousEta : null;
 
         state.missingPolls = prefs.getInt(KEY_TARGET_MISSING_POLLS, 0);
-        state.lastEtaMinutes = prefs.getInt(KEY_TARGET_LAST_ETA, -1);
-        state.lastLocationNo = prefs.getInt(KEY_TARGET_LAST_LOCATION_NO, -1);
 
         int mask = prefs.getInt(KEY_TARGET_NOTIFIED_MASK, 0);
         for (int threshold : THRESHOLDS) {
@@ -497,8 +479,6 @@ public class BusMonitorService extends Service {
                 .putInt(KEY_TARGET_PREVIOUS_ETA, state.previousEtaMinutes != null ? state.previousEtaMinutes : -1)
                 .putInt(KEY_TARGET_NOTIFIED_MASK, mask)
                 .putInt(KEY_TARGET_MISSING_POLLS, state.missingPolls)
-                .putInt(KEY_TARGET_LAST_ETA, state.lastEtaMinutes)
-                .putInt(KEY_TARGET_LAST_LOCATION_NO, state.lastLocationNo)
                 .apply();
     }
 

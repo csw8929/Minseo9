@@ -45,6 +45,7 @@ public class MainActivity extends AppCompatActivity {
     private static final float PULSE_MIN_ALPHA = 0.3f;
     private static final float DISABLED_BUTTON_ALPHA = 0.5f;
     private static final long PREVIEW_RETRY_DELAY_MS = TimeUnit.SECONDS.toMillis(15);
+    private static final long PREVIEW_REFRESH_INTERVAL_MS = TimeUnit.SECONDS.toMillis(20);
     private static final long LAST_UPDATED_TICK_MS = TimeUnit.SECONDS.toMillis(30);
 
     private View pulseDot;
@@ -277,12 +278,18 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void refreshArrivalPreview() {
-        if (previewFetchInFlight) {
+        refreshArrivalPreview(true);
+    }
+
+    private void refreshArrivalPreview(boolean showLoading) {
+        if (previewFetchInFlight || BusMonitorService.isMonitoringActive(this)) {
             return;
         }
         previewFetchInFlight = true;
         retryHandler.removeCallbacksAndMessages(null);
-        showIdle(getString(R.string.monitor_loading));
+        if (showLoading) {
+            showIdle(getString(R.string.monitor_loading));
+        }
         executorService.execute(() -> {
             try {
                 SelectedArrival selectedArrival = fetchSelectedVehicleArrival();
@@ -299,6 +306,7 @@ public class MainActivity extends AppCompatActivity {
                     updateLastUpdatedText();
                     renderEta(etaMinutes, locationNo, seatCount, stationName,
                             getString(R.string.monitor_idle));
+                    retryHandler.postDelayed(() -> refreshArrivalPreview(false), PREVIEW_REFRESH_INTERVAL_MS);
                 });
             } catch (IOException exception) {
                 Log.e(TAG, "도착 정보 미리보기 조회 실패", exception);
